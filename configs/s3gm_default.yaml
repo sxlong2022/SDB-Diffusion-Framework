@@ -1,0 +1,85 @@
+# 模型基本参数
+num_components: 5  # 1(经典) + 1(GEBCO) + 2(海图) + 1(掩码)
+image_size: 64
+num_frames: 6     # 2018-2023
+version: "bathymetry_v0"
+data: "bathymetry"
+
+# 模型架构参数
+model_channels: 128
+num_res_blocks: 5
+attention_resolutions: [8, 16, 32]
+dropout: 0.2
+channel_mult: [1, 2, 4, 4]
+dims: 2
+num_heads: 8
+use_checkpoint: true
+use_scale_shift_norm: true
+
+# 通道模态配置
+channel_modal: [1, 1, 2, 1]  # [经典模型, GEBCO, 海图(深度+掩码), 统一掩码]
+num_modals: 1
+
+# 扩散模型参数
+beta_min: 0.001
+beta_max: 15.0
+num_scales: 1000
+ema_rate: 0.999
+predictor: reverse_diffusion
+corrector: langevin
+probability_flow: true
+
+# 采样参数
+sampling:
+  alpha: 0.5
+  inner_loop: 100
+  snr: 0.15
+  continuous: true
+  num_steps: 20
+  overlap: 2
+
+# RPE相关参数
+beta: 32
+use_rpe_net: true
+time_embed_dim: 256
+
+# 时序处理参数
+time_decay: 0.08
+spatial_decay: 0.04
+
+# 性能优化参数
+use_fp16: false
+use_amp: false
+memory_efficient: true
+gradient_checkpointing: true
+use_reentrant: false  # 添加checkpoint重入参数
+requires_grad: true   # 新增：是否开启梯度计算
+
+# EMA相关参数
+use_ema: true
+ema_decay: 0.9999
+
+# SDE参数
+sigma_min: 0.005
+sigma_max: 0.3
+
+# 数值稳定性参数
+eps: 1.0e-12
+
+# 采样参数
+num_samples: 1
+num_samples_train: 1000
+num_samples_val: 1000
+train_split: 0.9
+
+# 数据处理参数
+land_value: 1.5  # 与preprocessor.py中的陆地标记值保持一致
+
+# 添加physics_guide配置
+physics_guide: false  # 禁用物理引导
+
+# 稳定性参数
+stability:
+  grad_clip: 0.1
+  check_grad_interval: 10
+  debug: true  # 添加debug选项控制日志输出

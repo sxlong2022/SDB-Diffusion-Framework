@@ -1,0 +1,48 @@
+<PAMDataset>
+  <Metadata>
+    <MDI key="elevation#long_name">Elevation relative to sea level</MDI>
+    <MDI key="elevation#sdn_parameter_name">Sea floor height (above mean sea level) {bathymetric height}</MDI>
+    <MDI key="elevation#sdn_parameter_urn">SDN:P01::BATHHGHT</MDI>
+    <MDI key="elevation#sdn_uom_name">Metres</MDI>
+    <MDI key="elevation#sdn_uom_urn">SDN:P06::ULAA</MDI>
+    <MDI key="elevation#standard_name">height_above_reference_ellipsoid</MDI>
+    <MDI key="elevation#units">m</MDI>
+    <MDI key="lat#axis">Y</MDI>
+    <MDI key="lat#long_name">latitude</MDI>
+    <MDI key="lat#sdn_parameter_name">Latitude north</MDI>
+    <MDI key="lat#sdn_parameter_urn">SDN:P01::ALATZZ01</MDI>
+    <MDI key="lat#sdn_uom_name">Degrees north</MDI>
+    <MDI key="lat#sdn_uom_urn">SDN:P06::DEGN</MDI>
+    <MDI key="lat#standard_name">latitude</MDI>
+    <MDI key="lat#units">degrees_north</MDI>
+    <MDI key="lon#axis">X</MDI>
+    <MDI key="lon#long_name">longitude</MDI>
+    <MDI key="lon#sdn_parameter_name">Longitude east</MDI>
+    <MDI key="lon#sdn_parameter_urn">SDN:P01::ALONZZ01</MDI>
+    <MDI key="lon#sdn_uom_name">Degrees east</MDI>
+    <MDI key="lon#sdn_uom_urn">SDN:P06::DEGE</MDI>
+    <MDI key="lon#standard_name">longitude</MDI>
+    <MDI key="lon#units">degrees_east</MDI>
+    <MDI key="NC_GLOBAL#comment">The data in the GEBCO_2020 Grid should not be used for navigation or any purpose relating to safety at sea.</MDI>
+    <MDI key="NC_GLOBAL#Conventions">CF-1.6</MDI>
+    <MDI key="NC_GLOBAL#history">Information on the development of the data set and the source data sets included in the grid can be found in the data set documentation available from https://www.gebco.net</MDI>
+    <MDI key="NC_GLOBAL#institution">On behalf of the General Bathymetric Chart of the Oceans (GEBCO), the data are held at the British Oceanographic Data Centre (BODC).</MDI>
+    <MDI key="NC_GLOBAL#node_offset">1</MDI>
+    <MDI key="NC_GLOBAL#references">DOI: 10.5285/a29c5465-b138-234d-e053-6c86abc040b9</MDI>
+    <MDI key="NC_GLOBAL#source">The GEBCO_2020 Grid is the latest global bathymetric product released by the General Bathymetric Chart of the Oceans (GEBCO) and has been developed through the Nippon Foundation-GEBCO Seabed 2030 Project. This is a collaborative project between the Nippon Foundation of Japan and GEBCO. The Seabed 2030 Project aims to bring together all available bathymetric data to produce the definitive map of the world ocean floor and make it available to all.</MDI>
+    <MDI key="NC_GLOBAL#title">The GEBCO_2020 Grid - a continuous terrain model for oceans and land at 15 arc-second intervals</MDI>
+  </Metadata>
+  <PAMRasterBand band="1">
+    <UnitType>m</UnitType>
+    <Metadata>
+      <MDI key="long_name">Elevation relative to sea level</MDI>
+      <MDI key="NETCDF_VARNAME">elevation</MDI>
+      <MDI key="sdn_parameter_name">Sea floor height (above mean sea level) {bathymetric height}</MDI>
+      <MDI key="sdn_parameter_urn">SDN:P01::BATHHGHT</MDI>
+      <MDI key="sdn_uom_name">Metres</MDI>
+      <MDI key="sdn_uom_urn">SDN:P06::ULAA</MDI>
+      <MDI key="standard_name">height_above_reference_ellipsoid</MDI>
+      <MDI key="units">m</MDI>
+    </Metadata>
+  </PAMRasterBand>
+</PAMDataset>

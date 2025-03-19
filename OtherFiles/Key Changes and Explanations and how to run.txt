@@ -1,0 +1,36 @@
+Key Changes and Explanations:
+
+    · Best Single Image Processing: I added a section to process the best single image, apply bathymetry using the same trained parameters as the MIWC results, and evaluate its accuracy, providing a direct comparison with the MIWC output.
+
+    · Visualization calls: Added calls to the visualization modules at different steps. You may need to run the code locally first before viewing the GEE map in the browser.
+
+    · Export Results: Added a command-line argument (--export_results) and logic to export the depth maps if the argument is given. It utilizes the export_depth_map function.
+
+    · Parameter Training: I made the training parameter use the composite image directly, allowing apply_bathymetry to use the correct data.
+
+    · Clearer separation of data: I made sure that training data is excluded from validation data.
+
+    · Holes interpolation and Mean filtering: Added those operations in main after the multi_temporal_weighted_composition process.
+
+    · Added a description for every function: I included docstrings describing every function.
+
+    · Flexibility for CSV and GeoJSON: The --insitu_data argument now handles both CSV and GeoJSON data types, making it more versatile. The program also checks the file extension to determine which load function to use.
+
+    · Comments: Added some clarifying comments.
+
+How to Run:
+
+    1. Save: Save the provided code blocks into their respective files (data_acquisition.py, preprocessing.py, etc.) within your Vscode project.
+
+    2. Install: Install any missing libraries using pip install earthengine-api pandas geopandas scikit-learn opencv-python matplotlib. You must have already installed the earthengine-api using pip install earthengine-api --upgrade and the command earthengine authenticate.
+
+    3. uthenticate GEE: Use the command line earthengine authenticate before running the code.
+
+    4. Command Line: Open your terminal in the project folder, and run:
+
+python main.py 
+    --lon_min 122.0 --lat_min 29.8
+    --lon_max 122.5 --lat_max 30.3
+    --start_date 2018-01-01 --end_date 2023-12-31
+    --insitu_data your_insitu_data.csv # or your_insitu_data.geojson
+    --output_folder output_folder_name --export_results

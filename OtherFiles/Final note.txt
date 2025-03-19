@@ -1,0 +1,33 @@
+· Replace the placeholder coordinates, dates, and file paths with your actual data.
+
+· The --output_folder parameter specifies where exported GeoTIFF images will be saved on your Google Drive.
+
+· The --export_results parameter tells the program to export the resulting depth maps.
+
+· The --power_parameter parameter specifies the power in inverse distance weighting, it can also be omitted, then the default will be used (4).
+
+· The --model_type parameter specifies the bathymetry model, and the options are LLM or LRM, if you don't specify, the default will be LLM.
+
+
+Next Steps (After Running This Version):
+
+1. Refine Visualization: Implement your visualization functions. The basic outline is in there, but you'll need to add specific ee.Map usage (using ee.mapclient), matplotlib, or seaborn plots.
+
+2. Model Training: Implement the model parameter training function (bathymetry.py). This will require using the insitu_data_fc, applying the model, and performing a regression analysis to derive the model coefficients.
+
+3. Data Partition: Implement your data partition in main.py. This will require a carefully selected strategy to ensure both the validation data and training data are consistent.
+
+4. Robust Cloud Shadow Masking: If you have significant cloud shadow issues, you may need to add a more advanced cloud shadow detection algorithm in preprocessing.py.
+
+5. Experiment:
+
+    · Try different power parameter values for the MIWC.
+
+    · Compare the results with more images.
+
+    · Try different segmentation strategies.
+
+    · Test different bathymetric models.
+
+
+Let me know if you would like help with implementing any of these further steps or have other adjustments!

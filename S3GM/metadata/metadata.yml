@@ -1,0 +1,13 @@
+metadata_version: 1
+name: Learning spatiotemporal dynamics with a pretrained generative model
+description: we propose a sparse-sensor-assisted score-based generative model (S3GM)
+  to reconstruct full-field spatiotemporal dynamics based on sparse measurement. We
+  use a dual-stage reconstruction pipeline, in which an unconditioned generative model
+  is firstly pretrained capturing the joint distribution of a vast group of pretraining
+  data in a self-supervised manner, followed then by a sampling process conditioned
+  on unseen sparse measurement. The code contains the pertained model and the corresponding
+  sampling process on the cases of Kolmogorov flow and cylinder flow.
+authors:
+- name: Zeyu Li
+  affiliations:
+  - name: Beihang University

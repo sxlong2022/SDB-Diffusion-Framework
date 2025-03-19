@@ -1,0 +1,84 @@
+# 水深反演经典模型参数配置
+
+# 对数转换线性模型(LLM)参数
+llm_params:
+  a0: 0.0  # 截距
+  a1: 1.0  # 蓝波段系数
+  a2: 1.0  # 绿波段系数
+  R_inf:
+    blue: 0.0  # 蓝波段深水反射率
+    green: 0.0  # 绿波段深水反射率
+
+# 随机森林模型(RF)参数
+rf_params:
+  # 模型结构参数
+  model_params:
+    n_estimators: 500        # 树的数量
+    max_depth: 25           # 最大深度
+    min_samples_split: 2    # 分裂所需最小样本数
+    min_samples_leaf: 1     # 叶节点最小样本数
+    max_features: 'sqrt'    # 特征选择方式
+    bootstrap: true         # 使用bootstrap采样
+    random_state: 42        # 随机种子
+    n_jobs: -1             # 并行处理
+    oob_score: true        # 启用袋外评分
+
+  # 特征工程参数
+  feature_engineering:
+    normalization:
+      use_standard_scaling: true  # 使用标准化缩放
+    
+    band_ratio:
+      use_log_transform: true    # 使用对数变换
+    
+    depth_index:
+      use_normalized_bands: true # 使用标准化后的波段
+
+  # 特征重要性（训练时更新）
+  feature_importances:
+    blue: 0.0
+    green: 0.0
+    band_ratio: 0.0
+    log_blue: 0.0
+    log_green: 0.0
+    log_ratio: 0.0
+    depth_index: 0.0
+
+# 对数转换比值模型(LRM)参数
+lrm_params:
+  m0: 0.0  # 偏移系数
+  m1: 1.0  # 比值系数
+  n: 1000.0  # 固定常数
+
+# 数据预处理参数
+preprocessing:
+  deep_water_percentile: 90  # 深水百分位数（用于LLM）
+  outlier_threshold: 2.5     # 异常值阈值（标准差倍数）
+  min_depth: 0.1            # 最小水深（米）
+  max_depth: 75.0           # 最大水深（米）
+  depth_limits:
+    min_depth: 0.1       # 最小水深（米）
+    max_depth: 75.0      # 最大水深（米）
+  
+  data_validation:
+    depth_range:
+      min_depth: 0.1     # 最小水深（米）
+      max_depth: 75.0    # 最大水深（米）
+    band_values:
+      min_value: 0.0     # 波段最小值
+      remove_negatives: true  # 移除负值
+
+# 训练参数
+training:
+  train_ratio: 0.8       # 训练数据比例
+  validation_ratio: 0.1  # 验证数据比例
+  random_seed: 42        # 随机种子
+  early_stopping:
+    patience: 10         # 早停轮数
+    min_delta: 0.001    # 最小改善阈值
+
+# 日志记录参数
+logging:
+  log_feature_importance: true    # 记录特征重要性
+  log_training_stats: true        # 记录训练统计信息
+  log_prediction_stats: true      # 记录预测统计信息
