@@ -639,80 +639,25 @@ class S3GMWrapper:
                 if isinstance(x, np.ndarray):
                     x = torch.from_numpy(x).to(self.device)
             
-                # 获取掩码（第4个通道）
-                mask = input_tensor[0, -1, 3:4]  # 使用2023年的掩码
-                land_mask = torch.abs(x - self.config.land_value) < 0.1
+                # 识别陆地
+                land_mask = torch.abs(x - 1.5) < 0.1
+                
+                # 首先处理NaN和无穷值
+                x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0, posinf=5.0, neginf=-5.0))
+                
+                # 处理数值过大的情况，但不强制裁剪到[-1,1]
+                # 只将超出[-5,5]范围的值压缩回该范围
                 sea_mask = ~land_mask
-            
-                if sea_mask.any():
-                    sea_data = x[sea_mask]
+                x = torch.where(sea_mask & (x > 5.0), 5.0, x)
+                x = torch.where(sea_mask & (x < -5.0), -5.0, x)
                 
-                    # 使用分位数统计代替均值和标准差
-                    q25 = torch.quantile(sea_data, 0.25)
-                    q75 = torch.quantile(sea_data, 0.75)
-                    iqr = q75 - q25
-                    median = torch.median(sea_data)
-                
-                    # 计算空间相关性权重
-                    H, W = x.shape[-2:]
-                    y_coords = torch.linspace(0, 1, H, device=self.device)
-                    x_coords = torch.linspace(0, 1, W, device=self.device)
-                    y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
-                    coords = torch.stack([y_grid, x_grid], dim=-1)
-                
-                    # 计算每个点与观测点的距离权重
-                    obs_points = (mask > 0).nonzero(as_tuple=True)
-                    if len(obs_points[0]) > 0:
-                        obs_coords = torch.stack([
-                            obs_points[0].float() / (H-1),
-                            obs_points[1].float() / (W-1)
-                        ], dim=-1)
-                    
-                        # 计算空间权重
-                        coords_flat = coords.reshape(-1, 2)
-                        distances = torch.cdist(coords_flat, obs_coords)
-                        min_distances = distances.min(dim=1)[0]
-                    
-                        # 使用自适应空间衰减
-                        spatial_decay = self.config.spatial_decay * (1 + torch.exp(-min_distances))
-                        spatial_weights = torch.exp(-spatial_decay * min_distances).reshape(H, W)
-                    
-                        # 根据空间权重调整阈值
-                        threshold_factor = torch.lerp(
-                            torch.tensor(2.0, device=self.device),
-                            torch.tensor(3.0, device=self.device),
-                            spatial_weights
-                        )
-                    
-                        # 计算动态阈值
-                        curr_min = median - threshold_factor * iqr
-                        curr_max = median + threshold_factor * iqr
-                    
-                        # 应用渐进式缩放
-                        scale_factor = torch.lerp(
-                            torch.tensor(0.95, device=self.device),
-                            torch.tensor(1.0, device=self.device),
-                            spatial_weights
-                        )
-                    
-                        # 应用自适应转换
-                        x = torch.where(land_mask, x,
-                                      torch.where(x < curr_min,
-                                                curr_min + (x - curr_min) * scale_factor,
-                                                torch.where(x > curr_max,
-                                                          curr_max + (x - curr_max) * scale_factor,
-                                                          x)))
-                    
-                        # 应用空间权重平滑
-                        x = x * (1 - spatial_weights) + x * spatial_weights
-            
-                # 处理NaN和无穷值
-                x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0))
-            
-                # 添加梯度裁剪
-                if self.config.stability.get('grad_clip', None):
-                    x = torch.clamp(x, -self.config.stability['grad_clip'], 
-                                  self.config.stability['grad_clip'])
+                # 记录数据范围 - 只在第一次调用时记录
+                if not hasattr(adaptive_transform_pretrain, "logged"):
+                    if torch.isfinite(x).any():
+                        min_val = x[torch.isfinite(x)].min().item()
+                        max_val = x[torch.isfinite(x)].max().item()
+                        logger.info(f"预训练数据范围: [{min_val:.4f}, {max_val:.4f}]")
+                    adaptive_transform_pretrain.logged = True
             
                 return x
 
@@ -760,95 +705,35 @@ class S3GMWrapper:
                 if isinstance(x, np.ndarray):
                     x = torch.from_numpy(x).to(self.device)
             
-                # 获取掩码（第4个通道）
-                mask = input_tensor[0, -1, 3:4]  # 使用2023年的掩码
-                land_mask = torch.abs(x - self.config.land_value) < 0.1
+                # 安全地获取掩码
+                try:
+                    mask = torch.zeros((x.shape[-2], x.shape[-1]), device=self.device)
+                    if isinstance(input_tensor, torch.Tensor) and len(input_tensor.shape) >= 5:
+                        if input_tensor.shape[1] > 0 and input_tensor.shape[2] > 3:
+                            mask = input_tensor[0, -1, 3:4].squeeze()
+                except Exception as e:
+                    logger.debug(f"获取掩码时出错: {e}，使用默认掩码")
+                    mask = torch.zeros((x.shape[-2], x.shape[-1]), device=self.device)
+            
+                # 识别陆地
+                land_mask = torch.abs(x - 1.5) < 0.1
+                
+                # 首先处理NaN和无穷值
+                x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0, posinf=5.0, neginf=-5.0))
+                
+                # 处理数值过大的情况，但仍保持在较广的范围内
+                # 只将超出[-5,5]范围的值压缩回该范围
                 sea_mask = ~land_mask
-            
-                if sea_mask.any():
-                    sea_data = x[sea_mask]
+                x = torch.where(sea_mask & (x > 5.0), 5.0, x)
+                x = torch.where(sea_mask & (x < -5.0), -5.0, x)
                 
-                    # 使用分位数统计
-                    q25 = torch.quantile(sea_data, 0.25)
-                    q75 = torch.quantile(sea_data, 0.75)
-                    iqr = q75 - q25
-                    median = torch.median(sea_data)
-                
-                    # 计算空间相关性权重
-                    H, W = x.shape[-2:]
-                    y_coords = torch.linspace(0, 1, H, device=self.device)
-                    x_coords = torch.linspace(0, 1, W, device=self.device)
-                    y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
-                    coords = torch.stack([y_grid, x_grid], dim=-1)
-                
-                    # 计算每个点与观测点的距离权重
-                    obs_points = (mask > 0).nonzero(as_tuple=True)
-                    if len(obs_points[0]) > 0:
-                        obs_coords = torch.stack([
-                            obs_points[0].float() / (H-1),
-                            obs_points[1].float() / (W-1)
-                        ], dim=-1)
-                    
-                        # 改进的空间权重计算
-                        coords_flat = coords.reshape(-1, 2)
-                        distances = torch.cdist(coords_flat, obs_coords)
-                        min_distances = distances.min(dim=1)[0]
-                    
-                        # 计算观测点密度
-                        density = torch.exp(-min_distances).mean()
-                    
-                        # 根据密度调整空间衰减率
-                        adaptive_decay = self.config.spatial_decay * (1 + torch.exp(-density))
-                        spatial_weights = torch.exp(-adaptive_decay * min_distances).reshape(H, W)
-                    
-                        # 计算时间权重（考虑年份差异）
-                        time_weights = torch.tensor(
-                            [np.exp(-self.config.time_decay * abs(i - len(self.config.time_range['sentinel']) + 1))
-                             for i in range(len(self.config.time_range['sentinel']))],
-                            device=self.device
-                        )
-                    
-                        # 结合时空权重
-                        combined_weights = spatial_weights * time_weights.view(-1, 1, 1)
-                    
-                        # 动态阈值调整
-                        base_threshold = 2.0
-                        max_threshold = 3.0
-                        threshold_factor = torch.lerp(
-                            torch.tensor(base_threshold, device=self.device),
-                            torch.tensor(max_threshold, device=self.device),
-                            combined_weights
-                        )
-                    
-                        # 计算自适应阈值
-                        curr_min = median - threshold_factor * iqr
-                        curr_max = median + threshold_factor * iqr
-                    
-                        # 渐进式缩放因子
-                        scale_factor = torch.lerp(
-                            torch.tensor(0.9, device=self.device),
-                            torch.tensor(1.0, device=self.device),
-                            combined_weights
-                        )
-                    
-                        # 应用自适应转换
-                        x = torch.where(land_mask, x,
-                                      torch.where(x < curr_min,
-                                                curr_min + (x - curr_min) * scale_factor,
-                                                torch.where(x > curr_max,
-                                                          curr_max + (x - curr_max) * scale_factor,
-                                                          x)))
-                    
-                        # 应用组合权重平滑
-                        x = x * (1 - combined_weights) + x * combined_weights
-            
-                # 处理NaN和无穷值
-                x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0))
-            
-                # 添加梯度裁剪
-                if self.config.stability.get('grad_clip', None):
-                    x = torch.clamp(x, -self.config.stability['grad_clip'], 
-                                  self.config.stability['grad_clip'])
+                # 记录数据范围 - 只在第一次调用时记录
+                if not hasattr(adaptive_transform_sampling, "logged"):
+                    if torch.isfinite(x).any():
+                        min_val = x[torch.isfinite(x)].min().item()
+                        max_val = x[torch.isfinite(x)].max().item()
+                        logger.info(f"采样数据范围: [{min_val:.4f}, {max_val:.4f}]")
+                    adaptive_transform_sampling.logged = True
             
                 return x
 

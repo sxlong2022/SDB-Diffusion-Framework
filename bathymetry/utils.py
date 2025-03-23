@@ -1,6 +1,17 @@
+import sys
+import os
 import numpy as np
 import logging
 from typing import Dict, List, Optional, Tuple, Union
+
+# 添加S3GM代码路径
+s3gm_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'S3GM', 'Code')
+if not os.path.exists(s3gm_path):
+    raise ImportError(f"S3GM代码路径不存在: {s3gm_path}")
+sys.path.append(s3gm_path)
+
+# 现在可以导入S3GM模块
+from sampler.sde import VESDE, VPSDE
 
 logger = logging.getLogger(__name__)
 

@@ -91,9 +91,9 @@ class DataPreprocessor:
                 iqr = q75 - q25
                 median = np.median(sea_depths)
             
-                # 使用IQR进行标准化，映射到[-1,1]范围
-                normalized_sea = (sea_depths - median) / (iqr + 1e-6)  # 添加epsilon避免除零
-                normalized_sea = np.clip(normalized_sea, -3, 3)  # 限制在±3个IQR范围内
+                # 使用IQR进行标准化，映射到[-5,5]范围
+                normalized_sea = (sea_depths - median) / (iqr + 1e-6) * 10  # 添加epsilon避免除零
+                normalized_sea = np.clip(normalized_sea, -5, 5)  # 限制在±5个IQR范围内
                 normalized_data[sea_mask] = normalized_sea
             
                 # 陆地区域设为特殊值（如1.5）
@@ -125,8 +125,8 @@ class DataPreprocessor:
                 median = np.median(valid_depths)
             
                 # 使用IQR进行标准化
-                normalized_valid = (valid_depths - median) / (iqr + 1e-6)
-                normalized_valid = np.clip(normalized_valid, -3, 3)
+                normalized_valid = (valid_depths - median) / (iqr + 1e-6) * 10
+                normalized_valid = np.clip(normalized_valid, -5, 5)
                 normalized_data[valid_mask] = normalized_valid
             
                 # 无效区域（陆地或无数据）设为特殊值

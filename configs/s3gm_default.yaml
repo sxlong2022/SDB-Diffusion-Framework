@@ -22,8 +22,8 @@ num_modals: 1
 
 # 扩散模型参数
 beta_min: 0.001
-beta_max: 15.0
-num_scales: 1000
+beta_max: 5.0
+num_scales: 300
 ema_rate: 0.999
 predictor: reverse_diffusion
 corrector: langevin
@@ -31,9 +31,9 @@ probability_flow: true
 
 # 采样参数
 sampling:
-  alpha: 0.5
+  alpha: 0.85
   inner_loop: 100
-  snr: 0.15
+  snr: 0.2
   continuous: true
   num_steps: 20
   overlap: 2
@@ -44,8 +44,8 @@ use_rpe_net: true
 time_embed_dim: 256
 
 # 时序处理参数
-time_decay: 0.08
-spatial_decay: 0.04
+time_decay: 0.12
+spatial_decay: 0.05
 
 # 性能优化参数
 use_fp16: false
@@ -60,8 +60,8 @@ use_ema: true
 ema_decay: 0.9999
 
 # SDE参数
-sigma_min: 0.005
-sigma_max: 0.3
+sigma_min: 0.002
+sigma_max: 0.2
 
 # 数值稳定性参数
 eps: 1.0e-12
@@ -80,6 +80,6 @@ physics_guide: false  # 禁用物理引导
 
 # 稳定性参数
 stability:
-  grad_clip: 0.1
-  check_grad_interval: 10
-  debug: true  # 添加debug选项控制日志输出
+  grad_clip: 1.0
+  check_grad_interval: 5
+  debug: true

@@ -38,8 +38,8 @@ class S3GMConfig:
     
     # 扩散模型参数
     beta_min: float = 0.001
-    beta_max: float = 15.0
-    num_scales: int = 1000
+    beta_max: float = 5.0
+    num_scales: int = 300
     ema_rate: float = 0.999
     predictor: str = "reverse_diffusion"
     corrector: str = "langevin"
@@ -47,11 +47,11 @@ class S3GMConfig:
     
     # 采样参数
     sampling: dict = field(default_factory=lambda: {
-        'alpha': 0.5,
+        'alpha': 0.85,
         'inner_loop': 100,
-        'snr': 0.15,
+        'snr': 0.2,
         'continuous': True,
-        'num_steps': 20, 
+        'num_steps': 20,
         'overlap': 2
     })
     
@@ -59,10 +59,10 @@ class S3GMConfig:
     beta: int = 32
     use_rpe_net: bool = True
     time_embed_dim: int = 256
-    
+        
     # 时序处理参数
-    time_decay: float = 0.08
-    spatial_decay: float = 0.04
+    time_decay: float = 0.12
+    spatial_decay: float = 0.05
     
     # 性能优化参数
     use_fp16: bool = False
@@ -77,8 +77,8 @@ class S3GMConfig:
     ema_decay: float = 0.9999
     
     # SDE参数
-    sigma_min: float = 0.005
-    sigma_max: float = 0.3  
+    sigma_min: float = 0.002
+    sigma_max: float = 0.2
     
     # 数值稳定性参数
     eps: float = 1.0e-12
@@ -94,9 +94,25 @@ class S3GMConfig:
     
     # 稳定性参数
     stability: dict = field(default_factory=lambda: {
-        'grad_clip': 0.1,
-        'check_grad_interval': 10,
+        'grad_clip': 1.0,
+        'check_grad_interval': 5,
         'debug': True  # 添加debug选项控制日志输出
+    })
+    
+    # 添加新的裁剪参数
+    clipping: dict = field(default_factory=lambda: {
+        'use_dynamic': True,     # 是否使用动态裁剪
+        'percentile_range': [1, 99],  # 百分位数范围
+        'expansion_factor': 1.2,  # 扩展系数
+        'land_threshold': 0.1    # 陆地判定阈值
+    })
+    
+    # 添加新的权重参数
+    weights: dict = field(default_factory=lambda: {
+        'spatial_min': 0.3,      # 空间权重最小值
+        'spatial_max': 1.0,      # 空间权重最大值
+        'temporal_min': 0.2,     # 时间权重最小值
+        'temporal_max': 1.0      # 时间权重最大值
     })
     
     def __post_init__(self):
@@ -177,3 +193,18 @@ def load_config(config_path: Optional[str] = None) -> S3GMConfig:
         print(f"加载配置文件失败: {str(e)}")
         print("使用默认配置")
         return S3GMConfig()
+
+def validate_config_consistency():
+    """验证配置文件与默认值的一致性"""
+    yaml_config = S3GMConfig.from_yaml('configs/s3gm_default.yaml')
+    default_config = S3GMConfig()
+    
+    for field in fields(S3GMConfig):
+        yaml_value = getattr(yaml_config, field.name)
+        default_value = getattr(default_config, field.name)
+        if yaml_value != default_value:
+            logger.warning(
+                f"配置不一致: {field.name}\n"
+                f"  yaml值: {yaml_value}\n"
+                f"  默认值: {default_value}"
+            )
