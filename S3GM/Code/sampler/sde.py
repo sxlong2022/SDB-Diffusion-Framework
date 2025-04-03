@@ -169,62 +169,98 @@ class VESDE(SDE):
 
 
 class VPSDE(SDE):
-  def __init__(self, config, beta_min=0.1, beta_max=20, N=1000):
-    """Construct a Variance Preserving SDE.
+    def __init__(self, config):
+        """构造VPSDE
+        
+        Args:
+            config: 配置对象，包含以下参数：
+                - beta_min: beta(0)的值，默认0.1
+                - beta_max: beta(1)的值，默认20.0
+                - N: 离散化步数
+        """
+        beta_min = config.get('beta_min', 0.1)
+        beta_max = config.get('beta_max', 20.0)
+        N = config.get('N', 1000)
+        super().__init__(N)
+        
+        self.beta_0 = beta_min
+        self.beta_1 = beta_max
+        self.N = N
+        self.config = config
+        
+        # 计算离散化的beta序列和alpha序列
+        self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)
+        self.alphas = 1. - self.discrete_betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
+        self.sqrt_1m_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
+        
+        # 添加数值稳定性参数
+        self.stability_eps = 1e-8
 
-    Args:
-      beta_min: value of beta(0)
-      beta_max: value of beta(1)
-      N: number of discretization steps
-    """
-    super().__init__(N)
-    self.config = config
-    self.beta_0 = beta_min
-    self.beta_1 = beta_max
-    self.N = N
-    self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)
-    self.alphas = 1. - self.discrete_betas
-    self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-    self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-    self.sqrt_1m_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
+    @property
+    def T(self):
+        return 1
 
-  @property
-  def T(self):
-    return 1
+    def sde(self, x, t):
+        """计算SDE的漂移和扩散系数
+        
+        Args:
+            x: 输入张量
+            t: 时间步，范围[0,1]
+        """
+        beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
+        drift = -0.5 * beta_t[:, None, None, None] * x
+        diffusion = torch.sqrt(beta_t)
+        return drift, diffusion
 
-  def sde(self, x, t):
-    beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
-    drift = -0.5 * beta_t[:, None, None, None] * x
-    diffusion = torch.sqrt(beta_t)
-    return drift, diffusion
+    def marginal_prob(self, x, t):
+        """计算边缘概率分布的参数
+        
+        Args:
+            x: 输入张量
+            t: 时间步
+        """
+        log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        
+        # 根据输入维度调整系数形状
+        if len(x.shape) == 4:  # [B,C,H,W]
+            mean = torch.exp(log_mean_coeff[:, None, None, None]) * x
+        elif len(x.shape) == 5:  # [B,T,C,H,W]
+            mean = torch.exp(log_mean_coeff[:, None, None, None, None]) * x
+        else:
+            raise ValueError(f"Unexpected input shape: {x.shape}")
+        
+        std = torch.sqrt(1. - torch.exp(2. * log_mean_coeff))
+        return mean, std
 
-  def marginal_prob(self, x, t):
-    log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
-    if len(x.shape)==4:
-        mean = torch.exp(log_mean_coeff[:, None, None, None]) * x
-    else:
-        mean = torch.exp(log_mean_coeff[:, None, None, None, None]) * x
-    std = torch.sqrt(1. - torch.exp(2. * log_mean_coeff))
-    return mean, std
+    def prior_sampling(self, shape):
+        """从先验分布采样
+        
+        Args:
+            shape: 采样形状
+        """
+        return torch.randn(*shape)
 
-  def prior_sampling(self, shape):
-    return torch.randn(*shape)
+    def prior_logp(self, z):
+        """计算先验分布的对数概率密度"""
+        shape = z.shape
+        N = np.prod(shape[1:])
+        logp = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
+        return logp
 
-  def prior_logp(self, z):
-    shape = z.shape
-    N = np.prod(shape[1:])
-    logps = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
-    return logps
+    def discretize(self, x, t, channel_modal=None):
+        """DDPM discretization."""
+        if isinstance(t, float):
+            t = torch.full((x.shape[0],), t, device=x.device)
+        timestep = (t * (self.N - 1)).long()
+        beta = self.discrete_betas.to(t.device)[timestep]
+        alpha = self.alphas.to(t.device)[timestep]
+        sqrt_beta = torch.sqrt(beta)
+        std = self.sqrt_1m_alphas_cumprod.to(t.device)[timestep] + 1e-8
+        
+        G = sqrt_beta
 
-  def discretize(self, x, t):
-    """DDPM discretization."""
-    timestep = (t * (self.N - 1) / self.T).long()
-    beta = self.discrete_betas.to(x.device)[timestep]
-    alpha = self.alphas.to(x.device)[timestep]
-    sqrt_beta = torch.sqrt(beta)
-    if len(x.shape) > 4:
-        f = torch.sqrt(alpha)[:, None, None, None, None] * x - x
-    else:
-      f = torch.sqrt(alpha)[:, None, None, None] * x - x
-    G = sqrt_beta
-    return f, G
+        f = torch.sqrt(beta)[:, None, None, None, None] * x
+        
+        return f, G

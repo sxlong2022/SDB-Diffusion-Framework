@@ -29,13 +29,44 @@ def sample_noise(shape, channel_modal, device='cpu', dtype=torch.float32):
 
 
 def predict_fn(net, sde, x, t, continuous=True):
+    """
+    增强版预测函数，处理输入范围并稳定计算
+    """
     if continuous:
-        labels = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        # 使用SDE的marginal_prob获取标准差作为标签
+        _, labels = sde.marginal_prob(torch.zeros_like(x), t)
     else:
+        # 使用离散时间步作为标签
         labels = sde.T - t
         labels *= sde.N - 1
         labels = torch.round(labels).long()
-    score = net(x, labels)
+    
+    # 增加数值稳定性检查 (输入)
+    if torch.isnan(x).any() or torch.isinf(x).any():
+        print(f"警告: predict_fn输入包含NaN或Inf值")
+        x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0) # 限制范围
+    
+    # 调用模型获取分数
+    # 确保标签类型与模型期望一致 (通常是float)
+    if isinstance(labels, torch.Tensor):
+        labels = labels.float()
+        
+    score = net(x, labels) # 确保标签传递正确
+    
+    # 增加后处理以增强稳定性 (输出)
+    if torch.isnan(score).any() or torch.isinf(score).any():
+        print(f"警告: predict_fn输出包含NaN或Inf值")
+        score = torch.nan_to_num(score, nan=0.0, posinf=10.0, neginf=-10.0) # 先处理NaN/Inf
+    
+    # 使用 torch.clamp 直接限制分数范围，例如限制在[-20, 20]
+    score_clamp_range = 20.0
+    score = torch.clamp(score, min=-score_clamp_range, max=score_clamp_range)
+    
+    # 可以在这里添加日志，查看clamp后的分数范围
+    # score_min, score_max = score.min().item(), score.max().item()
+    # if i % 25 == 0: # 假设i是可用的循环变量
+    #    print(f"Debug: Clamped score range [{score_min:.4f}, {score_max:.4f}]")
+
     return score
 
 

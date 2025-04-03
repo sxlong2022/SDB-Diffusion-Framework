@@ -21,7 +21,7 @@ class S3GMConfig:
     
     # 模型架构参数
     model_channels: int = 128
-    num_res_blocks: int = 5   
+    num_res_blocks: int = 4   
     attention_resolutions: Tuple[int, ...] = (8, 16, 32)
     dropout: float = 0.2
     channel_mult: Tuple[int, ...] = (1, 2, 4, 4)
@@ -37,9 +37,7 @@ class S3GMConfig:
     num_modals: int = 1
     
     # 扩散模型参数
-    beta_min: float = 0.001
-    beta_max: float = 5.0
-    num_scales: int = 300
+    num_scales: int = 1000
     ema_rate: float = 0.999
     predictor: str = "reverse_diffusion"
     corrector: str = "langevin"
@@ -48,10 +46,10 @@ class S3GMConfig:
     # 采样参数
     sampling: dict = field(default_factory=lambda: {
         'alpha': 0.85,
-        'inner_loop': 100,
+        'inner_loop': 20,
         'snr': 0.2,
         'continuous': True,
-        'num_steps': 20,
+        'num_steps': 3,
         'overlap': 2
     })
     
@@ -65,11 +63,12 @@ class S3GMConfig:
     spatial_decay: float = 0.05
     
     # 性能优化参数
-    use_fp16: bool = False
-    use_amp: bool = False
+    use_fp16: bool = True
+    use_amp: bool = True
     memory_efficient: bool = True
     gradient_checkpointing: bool = True
     use_reentrant: bool = False  # 添加checkpoint重入参数
+    batch_size_override: int = 1  # 强制使用小批量
     requires_grad: bool = True   # 新增，控制是否在训练时计算梯度
     
     # EMA相关参数
@@ -78,7 +77,7 @@ class S3GMConfig:
     
     # SDE参数
     sigma_min: float = 0.002
-    sigma_max: float = 0.2
+    sigma_max: float = 10
     
     # 数值稳定性参数
     eps: float = 1.0e-12
@@ -96,7 +95,9 @@ class S3GMConfig:
     stability: dict = field(default_factory=lambda: {
         'grad_clip': 1.0,
         'check_grad_interval': 5,
-        'debug': True  # 添加debug选项控制日志输出
+        'debug': True,  # 添加debug选项控制日志输出
+        'x0_hat_clamp': True,     # 是否对 x0_hat 计算进行限制
+        'score_clamp_range': 20.0 # 限制分数范围
     })
     
     # 添加新的裁剪参数
@@ -115,6 +116,21 @@ class S3GMConfig:
         'temporal_max': 1.0      # 时间权重最大值
     })
     
+    # 新增：范围适配参数
+    range_adaptation: dict = field(default_factory=lambda: {
+        'enabled': True,
+        'use_mixed_activation': True,
+        'land_value': 1.5,
+        'init_scale': 0.4,
+        'init_shift': 0.1,
+        'attention_scale_factor': 0.8
+    })
+    
+    # SDE配置
+    sde_type: str = 'vpsde'
+    beta_min: float = 0.1
+    beta_max: float = 20.0
+    
     def __post_init__(self):
         """初始化后的处理"""
         # 不需要调用super().__post_init__()
@@ -124,8 +140,10 @@ class S3GMConfig:
         if isinstance(self.channel_mult, list):
             self.channel_mult = tuple(self.channel_mult)
         
-        # 初始化VESDE参数
-        self.discrete_betas = torch.linspace(self.beta_min/self.num_scales, self.beta_max/self.num_scales, self.num_scales)
+        # 初始化 VPSDE 参数
+        self.discrete_betas = torch.linspace(self.beta_min/self.num_scales, 
+                                           self.beta_max/self.num_scales, 
+                                           self.num_scales)
         self.alphas = 1. - self.discrete_betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         

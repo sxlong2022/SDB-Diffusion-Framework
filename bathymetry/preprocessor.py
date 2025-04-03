@@ -72,121 +72,119 @@ class DataPreprocessor:
             raise
             
     def _normalize_data(self, data: np.ndarray, data_type: str) -> Tuple[np.ndarray, Dict[str, float]]:
-        """改进的标准化处理：使用分位数统计进行标准化，同时保持陆地区分"""
+        """改进的标准化处理：使用分位数统计进行标准化，允许更宽范围，同时保持陆地区分"""
         try:
-            normalized_data = np.zeros_like(data)
-        
+            # Create a copy to avoid modifying the original data array in place
+            normalized_data = data.astype(np.float32).copy() 
+            stats = self._get_default_stats() # Initialize with defaults
+
             if data_type == 'gebco':
-                # GEBCO数据：需要分别处理海域和陆地
                 sea_mask = data < 0
                 if not np.any(sea_mask):
                     logger.warning(f"GEBCO数据中没有有效的水深数据")
-                    return normalized_data, self._get_default_stats()
-            
-                # 将负值转换为正值
+                    normalized_data.fill(1.5) # Fill with land value if no sea
+                    return normalized_data, stats
+                
                 sea_depths = -data[sea_mask]
-            
-                # 使用分位数统计
                 q25, q75 = np.percentile(sea_depths, [25, 75])
                 iqr = q75 - q25
                 median = np.median(sea_depths)
-            
-                # 使用IQR进行标准化，映射到[-5,5]范围
-                normalized_sea = (sea_depths - median) / (iqr + 1e-6) * 10  # 添加epsilon避免除零
-                normalized_sea = np.clip(normalized_sea, -5, 5)  # 限制在±5个IQR范围内
+
+                # --- Adjustment ---
+                # Use a smaller scaling factor (e.g., 5) and remove clipping
+                scaling_factor = 5.0 # Tunable: Maps IQR to [-scaling_factor/2, scaling_factor/2]
+                normalized_sea = (sea_depths - median) / (iqr + 1e-6) * scaling_factor
+                # normalized_sea = np.clip(normalized_sea, -5, 5) # <-- REMOVED CLIPPING
                 normalized_data[sea_mask] = normalized_sea
-            
-                # 陆地区域设为特殊值（如1.5）
+                # --- End Adjustment ---
+
                 land_mask = ~sea_mask
-                normalized_data[land_mask] = 1.5  # 使用超出[-1,1]范围的值表示陆地
-            
+                normalized_data[land_mask] = 1.5
+
                 stats = {
-                    'median': float(median),
-                    'iqr': float(iqr),
-                    'q25': float(q25),
-                    'q75': float(q75),
-                    'land_value': 1.5,
-                    'min': float(sea_depths.min()),
-                    'max': float(sea_depths.max())
+                    'median': float(median), 'iqr': float(iqr), 'q25': float(q25), 'q75': float(q75),
+                    'land_value': 1.5, 'min': float(sea_depths.min()), 'max': float(sea_depths.max())
                 }
-            
+
             elif data_type in ['classic', 'chart']:
-                # 经典模型和海图数据：只处理有效值
                 valid_mask = data > 0
                 if not np.any(valid_mask):
                     logger.warning(f"{data_type}数据中没有有效的水深数据")
-                    return normalized_data, self._get_default_stats()
-            
+                    normalized_data.fill(1.5) # Fill with invalid value
+                    return normalized_data, stats
+
                 valid_depths = data[valid_mask]
-            
-                # 使用分位数统计
                 q25, q75 = np.percentile(valid_depths, [25, 75])
                 iqr = q75 - q25
                 median = np.median(valid_depths)
-            
-                # 使用IQR进行标准化
-                normalized_valid = (valid_depths - median) / (iqr + 1e-6) * 10
-                normalized_valid = np.clip(normalized_valid, -5, 5)
+
+                # --- Adjustment ---
+                # Use a smaller scaling factor (e.g., 5) and remove clipping
+                scaling_factor = 5.0 # Use the same factor for consistency
+                normalized_valid = (valid_depths - median) / (iqr + 1e-6) * scaling_factor
+                # normalized_valid = np.clip(normalized_valid, -5, 5) # <-- REMOVED CLIPPING
                 normalized_data[valid_mask] = normalized_valid
-            
-                # 无效区域（陆地或无数据）设为特殊值
+                # --- End Adjustment ---
+
                 invalid_mask = ~valid_mask
                 normalized_data[invalid_mask] = 1.5
-            
+
                 stats = {
-                    'median': float(median),
-                    'iqr': float(iqr),
-                    'q25': float(q25),
-                    'q75': float(q75),
-                    'invalid_value': 1.5,
-                    'min': float(valid_depths.min()),
-                    'max': float(valid_depths.max())
+                    'median': float(median), 'iqr': float(iqr), 'q25': float(q25), 'q75': float(q75),
+                    'invalid_value': 1.5, 'min': float(valid_depths.min()), 'max': float(valid_depths.max())
                 }
-        
-            # 增强数据检查
+
+            # Ensure land/invalid values are set correctly
+            if data_type == 'gebco':
+                 normalized_data[data >= 0] = 1.5 # Ensure non-negative GEBCO is land
+            else:
+                 normalized_data[data <= 0] = 1.5 # Ensure non-positive chart/classic is invalid/land
+
+            # Final check for NaNs introduced during processing
+            if np.isnan(normalized_data).any():
+                 logger.warning(f"{data_type} 标准化后包含NaN值，将替换为陆地/无效值 {stats.get('land_value', 1.5)}")
+                 normalized_data = np.nan_to_num(normalized_data, nan=stats.get('land_value', 1.5))
+
             self._check_normalized_data(normalized_data, data_type, stats)
-        
+
             return normalized_data, stats
-        
+
         except Exception as e:
-            logger.error(f"数据标准化失败: {str(e)}")
+            logger.error(f"数据标准化失败 ({data_type}): {str(e)}")
             raise
 
     def _check_normalized_data(self, data: np.ndarray, data_type: str, stats: Dict[str, float]):
         """增强的标准化数据检查"""
-        # 检查NaN值
+        # Check for NaNs before processing stats
         if np.isnan(data).any():
-            logger.warning(f"{data_type}数据中存在NaN值")
-    
-        # 检查有效值范围（排除陆地标记值1.5）
-        valid_mask = (data != 1.5) & (data != 0)
-    
-        # 输出详细的数据分布信息
-        land_ratio = np.mean(data == 1.5)
-        zero_ratio = np.mean(data == 0)
+            logger.warning(f"{data_type}数据检查时发现NaN值 (在填充后?)")
+
+        land_value = stats.get('land_value', 1.5) # Get land/invalid value from stats
+        valid_mask = ~np.isclose(data, land_value) & ~np.isnan(data) # Exclude land/invalid and NaNs
+
+        logger.info(f"{data_type} 标准化后数据分布:")
+        land_ratio = np.mean(np.isclose(data, land_value))
+        logger.info(f"- 陆地/无效值 ({land_value}) 比例: {land_ratio:.2%}")
+
         if np.any(valid_mask):
             valid_data = data[valid_mask]
-            percentiles = np.percentile(valid_data, [0, 25, 50, 75, 100])
-            logger.info(f"{data_type}数据分布: ")
-            logger.info(f"- 陆地比例: {land_ratio:.2%}")
-            logger.info(f"- 零值比例: {zero_ratio:.2%}")
-            logger.info(f"- 分位数 [0, 25, 50, 75, 100]: {percentiles}")
-            logger.info(f"- 原始数据范围: [{stats['min']:.2f}, {stats['max']:.2f}]")
+            percentiles = np.percentile(valid_data, [0, 25, 50, 75, 100]) if len(valid_data) > 0 else ["N/A"]*5
+            logger.info(f"- 有效值范围: [{valid_data.min():.4f}, {valid_data.max():.4f}]")
+            logger.info(f"- 有效值分位数 [0, 25, 50, 75, 100]: {percentiles}")
+            logger.info(f"- 原始物理值范围: [{stats.get('min', 'N/A'):.2f}, {stats.get('max', 'N/A'):.2f}]")
             if 'iqr' in stats:
-                logger.info(f"- IQR: {stats['iqr']:.2f}")
+                logger.info(f"- 原始物理值IQR: {stats['iqr']:.2f}")
         else:
-            logger.warning(f"{data_type}数据中没有有效值")
+            logger.warning(f"- {data_type}数据中没有有效值 (非陆地/无效值)")
+
 
     def _get_default_stats(self) -> Dict[str, float]:
         """扩展的默认统计值"""
+        # Provide more robust defaults, especially min/max
         return {
-            'median': 0.0,
-            'iqr': 1.0,
-            'q25': -0.5,
-            'q75': 0.5,
-            'land_value': 1.5,
-            'min': 0.0,
-            'max': 0.0
+            'median': 0.0, 'iqr': 1.0, 'q25': -0.5, 'q75': 0.5,
+            'land_value': 1.5, 'invalid_value': 1.5, # Keep both for clarity
+            'min': 0.0, 'max': 0.0
         }
             
     def _create_measurement_grid(

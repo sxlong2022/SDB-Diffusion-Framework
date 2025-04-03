@@ -460,6 +460,12 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
             logger.info("加载已有预训练模型")
             system.s3gm.load_pretrained(pretrained_model_path)
         
+        # 添加范围适配参数日志
+        logger.info("模型配置信息:")
+        logger.info(f"  - 范围适配: {system.s3gm.config.range_adaptation['enabled']}")
+        logger.info(f"  - 混合激活函数: {system.s3gm.config.range_adaptation['use_mixed_activation']}")
+        logger.info(f"  - 陆地标记值: {system.s3gm.config.range_adaptation['land_value']}")
+        
         # 在Stage 2.2之前验证模型
         logger.info("验证模型...")
         test_input = torch.randn(1, 6, 5, 64, 64).to(system.s3gm.device)
@@ -645,30 +651,67 @@ def load_trained_classic_models():
         raise
 
 def denormalize_bathymetry(normalized_data: np.ndarray, stats: Dict[str, float]) -> np.ndarray:
-    """反标准化水深数据"""
+    """反标准化水深数据，并强制物理约束
+    
+    Args:
+        normalized_data: 归一化的水深数据
+        stats: 包含统计信息的字典，必须包含 'median', 'iqr' 和可选的 'land_value'
+        
+    Returns:
+        反标准化后的水深数据，确保所有海域深度为非负值
+    """
     try:
-        # 识别陆地区域
-        land_mask = np.abs(normalized_data - 1.5) < 0.1
+        # 确保与 preprocessor.py 中使用相同的 scaling_factor
+        scaling_factor = 5.0
         
-        # 检查实际数据范围
+        # 从 stats 中获取 land_value，提供默认值
+        land_value = stats.get('land_value', 1.5)
+        
+        # 识别陆地区域 (使用 isclose 以处理浮点误差)
+        land_mask = np.isclose(normalized_data, land_value)
+        
+        # 检查实际数据范围（用于调试）
         valid_data = normalized_data[~land_mask & ~np.isnan(normalized_data)]
-        actual_min, actual_max = valid_data.min(), valid_data.max()
-        logger.info(f"反标准化前实际数据范围: [{actual_min:.4f}, {actual_max:.4f}]")
+        if len(valid_data) > 0:
+            actual_min, actual_max = valid_data.min(), valid_data.max()
+            logger.info(f"反标准化前有效数据范围: [{actual_min:.4f}, {actual_max:.4f}]")
+        else:
+            logger.warning("反标准化前没有找到有效（非陆地/NaN）数据")
+
+        # 执行反标准化计算
+        # 1. 首先创建输出数组的副本以避免修改输入
+        depth_denorm = normalized_data.copy()
         
-        # 反标准化到实际深度，保持原始范围
-        depth_denorm = normalized_data * (stats['iqr'] / 10) + stats['median']
+        # 2. 反标准化公式: denorm = (norm / scaling_factor) * iqr + median
+        # 注意：这里明确地写出逆运算过程
+        depth_denorm = (normalized_data / (scaling_factor + 1e-6)) * stats['iqr'] + stats['median']
         
-        # 只处理陆地区域
-        depth_denorm = np.where(
-            land_mask,
-            0.0,
-            depth_denorm
-        )
+        # 3. 处理特殊区域
+        # 将陆地区域设置为0（而不是NaN或其他值）
+        depth_denorm = np.where(land_mask, 0.0, depth_denorm)
         
-        # 将NaN值替换为0.0
-        depth_denorm = np.where(np.isnan(depth_denorm), 0.0, depth_denorm)
+        # 4. 强制物理约束：水深必须非负
+        # 仅对非陆地区域应用约束
+        sea_mask = ~land_mask
+        if np.any(depth_denorm[sea_mask] < 0):
+            neg_count = np.sum(depth_denorm[sea_mask] < 0)
+            total_count = np.sum(sea_mask)
+            logger.warning(f"检测到负水深值，占海域像素的 {(neg_count/total_count)*100:.2f}%")
+            logger.warning(f"负值范围: [{depth_denorm[sea_mask & (depth_denorm < 0)].min():.2f}, 0) 米")
+            
+            # 将负水深强制设置为0
+            depth_denorm[sea_mask] = np.maximum(depth_denorm[sea_mask], 0.0)
         
-        logger.info(f"反标准化后深度范围: [{depth_denorm[~land_mask].min():.2f}, {depth_denorm[~land_mask].max():.2f}]")
+        # 5. 处理可能的 NaN 值
+        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0)
+        
+        # 6. 最终检查和日志
+        if np.any(sea_mask):
+            sea_depths = depth_denorm[sea_mask]
+            logger.info(f"反标准化后深度范围 (海域): [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")
+        else:
+            logger.warning("反标准化后没有海域像素")
+            
         return depth_denorm
         
     except Exception as e:

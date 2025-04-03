@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import (
     SiLU,
+    MixedRangeActivation,
+    InputRangeAdapter,
     conv_nd,
     linear,
     avg_pool_nd,
@@ -139,6 +141,7 @@ class ResBlock(TimestepBlock):
         use_scale_shift_norm=False,
         dims=2,
         use_checkpoint=False,
+        use_mixed_activation=True,
     ):
         super().__init__()
         self.channels = channels
@@ -148,14 +151,17 @@ class ResBlock(TimestepBlock):
         self.use_conv = use_conv
         self.use_checkpoint = use_checkpoint
         self.use_scale_shift_norm = use_scale_shift_norm
+        self.use_mixed_activation = use_mixed_activation
 
+        activation_fn = MixedRangeActivation if use_mixed_activation else SiLU
+        
         self.in_layers = nn.Sequential(
             normalization(channels),
-            SiLU(),
+            activation_fn(),
             conv_nd(dims, channels, self.out_channels, 3, padding=1),
         )
         self.emb_layers = nn.Sequential(
-            SiLU(),
+            activation_fn(),
             linear(
                 emb_channels,
                 2 * self.out_channels if use_scale_shift_norm else self.out_channels,
@@ -163,7 +169,7 @@ class ResBlock(TimestepBlock):
         )
         self.out_layers = nn.Sequential(
             normalization(self.out_channels),
-            SiLU(),
+            activation_fn(),
             nn.Dropout(p=dropout),
             zero_module(
                 conv_nd(dims, self.out_channels, self.out_channels, 3, padding=1)
@@ -209,58 +215,76 @@ class ResBlock(TimestepBlock):
 
 class FactorizedAttentionBlock(nn.Module):
 
-    def __init__(self, channels, num_heads, use_rpe_net, time_embed_dim=None, use_checkpoint=False):
+    def __init__(self, channels, num_heads, use_rpe_net, time_embed_dim=None, use_checkpoint=False, use_mixed_activation=True):
         super().__init__()
         self.spatial_attention = RPEAttention(
             channels=channels, num_heads=num_heads, use_checkpoint=use_checkpoint,
             use_rpe_q=False, use_rpe_k=False, use_rpe_v=False,
+            use_mixed_activation=use_mixed_activation
         )
         self.temporal_attention = RPEAttention(
             channels=channels, num_heads=num_heads, use_checkpoint=use_checkpoint,
             time_embed_dim=time_embed_dim, use_rpe_net=use_rpe_net,
+            use_mixed_activation=use_mixed_activation
+        )
+        
+        self.range_adjust = nn.Sequential(
+            normalization(channels),
+            MixedRangeActivation() if use_mixed_activation else SiLU(),
+            zero_module(conv_nd(2, channels, channels, 1))
         )
 
     def forward(self, x, attn_mask, temb, T, frame_indices=None, attn_weights_list=None):
         if len(x.shape) == 4:
             BT, C, H, W = x.shape
             B = BT//T
-            # reshape to have T in the last dimension becuase that's what we attend over
+            
+            x = x + self.range_adjust(x)
+            
             x = x.view(B, T, C, H, W).permute(0, 3, 4, 2, 1)  # B, H, W, C, T
             x = x.reshape(B, H*W, C, T)
+            
             x = self.temporal_attention(x,
                                         temb,
                                         frame_indices,
                                         attn_mask=attn_mask.flatten(start_dim=2).squeeze(dim=2), # B x T
                                         attn_weights_list=None if attn_weights_list is None else attn_weights_list['temporal'],)
 
-            # Now we attend over the spatial dimensions by reshaping the input
             x = x.view(B, H, W, C, T).permute(0, 4, 3, 1, 2)  # B, T, C, H, W
             x = x.reshape(B, T, C, H*W)
+            
             x = self.spatial_attention(x,
                                     temb,
                                     frame_indices=None,
                                     attn_weights_list=None if attn_weights_list is None else attn_weights_list['spatial'])
+            
             x = x.reshape(BT, C, H, W)
+            
         elif len(x.shape) == 3:
             BT, C, H = x.shape
             B = BT//T
-            # reshape to have T in the last dimension becuase that's what we attend over
+            
+            x = x + self.range_adjust(x.unsqueeze(-1)).squeeze(-1)
+            
             x = x.view(B, T, C, H).permute(0, 3, 2, 1)  # B, H, C, T
             x = x.reshape(B, H, C, T)
+            
             x = self.temporal_attention(x,
                                         temb,
                                         frame_indices,
                                         attn_mask=attn_mask.flatten(start_dim=2).squeeze(dim=2), # B x T
                                         attn_weights_list=None if attn_weights_list is None else attn_weights_list['temporal'],)
 
-            # Now we attend over the spatial dimensions by reshaping the input
             x = x.view(B, H, C, T).permute(0, 3, 2, 1)  # B, T, C, H
             x = x.reshape(B, T, C, H)
+            
             x = self.spatial_attention(x,
                                     temb,
                                     frame_indices=None,
                                     attn_weights_list=None if attn_weights_list is None else attn_weights_list['spatial'])
+            
             x = x.reshape(BT, C, H)
+            
         return x
 
 
@@ -302,6 +326,8 @@ class UNetVideoModel(nn.Module):
         num_heads_upsample=-1,
         use_scale_shift_norm=False,
         use_rpe_net=False,
+        use_mixed_activation=True,
+        land_value=1.5,
     ):
         super().__init__()
 
@@ -320,11 +346,15 @@ class UNetVideoModel(nn.Module):
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
         self.use_rpe_net = use_rpe_net
+        self.use_mixed_activation = use_mixed_activation
+        self.land_value = land_value
+
+        self.input_adapter = InputRangeAdapter(in_channels, in_channels, land_value=land_value)
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
-            SiLU(),
+            MixedRangeActivation() if use_mixed_activation else SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
 
@@ -349,13 +379,14 @@ class UNetVideoModel(nn.Module):
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
+                        use_mixed_activation=use_mixed_activation,
                     )
                 ]
                 ch = mult * model_channels
                 if ds in attention_resolutions:
                     layers.append(
                         FactorizedAttentionBlock(
-                            ch, use_checkpoint=use_checkpoint, num_heads=num_heads, use_rpe_net=use_rpe_net, time_embed_dim=time_embed_dim,
+                            ch, use_checkpoint=use_checkpoint, num_heads=num_heads, use_rpe_net=use_rpe_net, time_embed_dim=time_embed_dim, use_mixed_activation=use_mixed_activation,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedAttnThingsSequential(*layers))
@@ -375,8 +406,16 @@ class UNetVideoModel(nn.Module):
                 dims=dims,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
+                use_mixed_activation=use_mixed_activation,
             ),
-            FactorizedAttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads, use_rpe_net=use_rpe_net, time_embed_dim=time_embed_dim),
+            FactorizedAttentionBlock(
+                ch, 
+                use_checkpoint=use_checkpoint, 
+                num_heads=num_heads, 
+                use_rpe_net=use_rpe_net, 
+                time_embed_dim=time_embed_dim,
+                use_mixed_activation=use_mixed_activation
+            ),
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -384,6 +423,7 @@ class UNetVideoModel(nn.Module):
                 dims=dims,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
+                use_mixed_activation=use_mixed_activation,
             ),
         )
 
@@ -399,6 +439,7 @@ class UNetVideoModel(nn.Module):
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
+                        use_mixed_activation=use_mixed_activation,
                     )
                 ]
                 ch = model_channels * mult
@@ -410,6 +451,7 @@ class UNetVideoModel(nn.Module):
                             num_heads=num_heads_upsample,
                             use_rpe_net=use_rpe_net,
                             time_embed_dim=time_embed_dim,
+                            use_mixed_activation=use_mixed_activation,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -419,7 +461,7 @@ class UNetVideoModel(nn.Module):
 
         self.out = nn.Sequential(
             normalization(ch),
-            SiLU(),
+            MixedRangeActivation() if use_mixed_activation else SiLU(),
             zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
         )
 
@@ -466,16 +508,25 @@ class UNetVideoModel(nn.Module):
         # add channel to indicate obs
         indicator_template = th.ones_like(x[:, :, :1, :, :]) if len(x.shape) == 5 else th.ones_like(x[:, :, :1, :])
         obs_indicator = indicator_template * obs_mask
-        x = th.cat([x*(1-obs_mask) + x0*obs_mask,
+        combined_x = th.cat([x*(1-obs_mask) + x0*obs_mask,
                     obs_indicator],
                    dim=2,
         )
-        x = x.reshape(B*T, self.in_channels, *x.shape[3:])
+        combined_x = combined_x.reshape(B*T, combined_x.shape[2], *combined_x.shape[3:])
+        
+        # 记录实际输入通道数，以便后续处理
+        actual_channels = combined_x.shape[1]
+        if actual_channels != self.in_channels and actual_channels != self.in_channels - 1:
+            # 只有当差异不是预期的+1时才记录警告
+            print(f"警告: 输入通道数 ({actual_channels}) 与模型预期 ({self.in_channels}) 不匹配")
+        
+        # 使用输入适配器处理输入
+        adapted_x, land_mask = self.input_adapter(combined_x)
+        
         timesteps = timesteps.reshape(B*T)
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        # h = x.type(self.inner_dtype)
-        h = x.type(x.dtype)
+        h = adapted_x.type(adapted_x.dtype)
         attns = {'spatial': [], 'temporal': [], 'mixed': []} if return_attn_weights else None
         for layer, module in enumerate(self.input_blocks):
             h = module(h, emb,  attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
@@ -484,9 +535,9 @@ class UNetVideoModel(nn.Module):
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb,  attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
-        h = h.type(x.dtype)
+        h = h.type(adapted_x.dtype)
         out = self.out(h)
-        return out.view(B, T, self.out_channels, *x.shape[2:]), attns
+        return out.view(B, T, self.out_channels, *adapted_x.shape[2:]), attns
 
     def get_feature_vectors(self, x, timesteps, y=None):
         """

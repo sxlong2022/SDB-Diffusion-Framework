@@ -7,7 +7,7 @@ data: "bathymetry"
 
 # 模型架构参数
 model_channels: 128
-num_res_blocks: 5
+num_res_blocks: 4
 attention_resolutions: [8, 16, 32]
 dropout: 0.2
 channel_mult: [1, 2, 4, 4]
@@ -20,10 +20,13 @@ use_scale_shift_norm: true
 channel_modal: [1, 1, 2, 1]  # [经典模型, GEBCO, 海图(深度+掩码), 统一掩码]
 num_modals: 1
 
+# SDE配置
+sde_type: 'vpsde'  # 指定使用VPSDE
+beta_min: 0.1
+beta_max: 20.0
+num_scales: 1000
+
 # 扩散模型参数
-beta_min: 0.001
-beta_max: 5.0
-num_scales: 300
 ema_rate: 0.999
 predictor: reverse_diffusion
 corrector: langevin
@@ -32,10 +35,10 @@ probability_flow: true
 # 采样参数
 sampling:
   alpha: 0.85
-  inner_loop: 100
-  snr: 0.2
+  inner_loop: 20
+  snr: 0.128
   continuous: true
-  num_steps: 20
+  num_steps: 3
   overlap: 2
 
 # RPE相关参数
@@ -48,20 +51,17 @@ time_decay: 0.12
 spatial_decay: 0.05
 
 # 性能优化参数
-use_fp16: false
-use_amp: false
+use_fp16: true
+use_amp: true
 memory_efficient: true
 gradient_checkpointing: true
-use_reentrant: false  # 添加checkpoint重入参数
-requires_grad: true   # 新增：是否开启梯度计算
+use_reentrant: false
+batch_size_override: 1
+requires_grad: true
 
 # EMA相关参数
 use_ema: true
 ema_decay: 0.9999
-
-# SDE参数
-sigma_min: 0.002
-sigma_max: 0.2
 
 # 数值稳定性参数
 eps: 1.0e-12
@@ -73,13 +73,39 @@ num_samples_val: 1000
 train_split: 0.9
 
 # 数据处理参数
-land_value: 1.5  # 与preprocessor.py中的陆地标记值保持一致
+land_value: 1.5
 
-# 添加physics_guide配置
-physics_guide: false  # 禁用物理引导
+# 物理约束参数
+physics_guide: false
 
 # 稳定性参数
 stability:
   grad_clip: 1.0
   check_grad_interval: 5
   debug: true
+  monitor_data_ranges: true
+  x0_hat_clamp: true
+  score_clamp_range: 20.0
+
+# 裁剪参数
+clipping:
+  use_dynamic: true
+  percentile_range: [1, 99]
+  expansion_factor: 1.2
+  land_threshold: 0.1
+
+# 权重参数
+weights:
+  spatial_min: 0.3
+  spatial_max: 1.0
+  temporal_min: 0.2
+  temporal_max: 1.0
+
+# 范围适配配置
+range_adaptation:
+  enabled: true
+  use_mixed_activation: true
+  land_value: 1.5
+  init_scale: 0.4
+  init_shift: 0.1
+  attention_scale_factor: 0.8

@@ -51,9 +51,12 @@ class S3GMWrapper:
             # 3. 设置设备
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
-            # 4. 初始化模型
+            # 4. 初始化模型 - 注意：UNetVideoModel内部会将in_channels+1
+            input_channels = self.config.num_components
+            logger.info(f"模型初始化：输入通道数={input_channels} (UNet内部会+1)")
+            
             self.model = UNetVideoModel(
-                in_channels=self.config.num_components,
+                in_channels=input_channels,
                 model_channels=self.config.model_channels,
                 out_channels=self.config.num_components,
                 num_res_blocks=self.config.num_res_blocks,
@@ -62,27 +65,37 @@ class S3GMWrapper:
                 channel_mult=self.config.channel_mult,
                 dims=self.config.dims,
                 num_heads=self.config.num_heads,
-                use_rpe_net=self.config.use_rpe_net
+                use_rpe_net=self.config.use_rpe_net,
+                use_mixed_activation=self.config.range_adaptation['use_mixed_activation'],
+                land_value=self.config.range_adaptation['land_value']
             ).to(self.device)
+            
+            # 添加日志记录已初始化的模型参数
+            logger.info(f"模型参数计数: {sum(p.numel() for p in self.model.parameters())}")
+            logger.info(f"模型输入通道: {self.model.in_channels}")
+            logger.info(f"模型输出通道: {self.model.out_channels}")
+            
+            # 记录配置
+            logger.info(f"范围适配配置:")
+            for key, value in self.config.range_adaptation.items():
+                logger.info(f"  - {key}: {value}")
             
             # 5. 初始化SDE
             sde_config = {
                 'beta_min': self.config.beta_min,
                 'beta_max': self.config.beta_max,
                 'N': self.config.num_scales,
-                'sigma_min': self.config.sigma_min,
-                'sigma_max': self.config.sigma_max
             }
-            logger.info(f"初始化SDE配置: {sde_config}")
-            self.sde = VESDE(config=sde_config)
-            logger.info(f"SDE初始化后参数: sigma_min={self.sde.sigma_min}, sigma_max={self.sde.sigma_max}, num_scales={self.config.num_scales}")
+            logger.info(f"初始化VPSDE配置: {sde_config}")
+            self.sde = VPSDE(config=sde_config)
+            logger.info(f"VPSDE初始化后参数: beta_min={self.sde.beta_0}, beta_max={self.sde.beta_1}, num_scales={self.config.num_scales}")
             
             # 添加参数验证
-            if hasattr(self.sde, 'sigma_max') and self.sde.sigma_max != self.config.sigma_max:
-                logger.warning(f"SDE初始化后sigma_max不匹配: 配置值={self.config.sigma_max}, 实际值={self.sde.sigma_max}")
+            if hasattr(self.sde, 'beta_max') and self.sde.beta_max != self.config.beta_max:
+                logger.warning(f"SDE初始化后beta_max不匹配: 配置值={self.config.beta_max}, 实际值={self.sde.beta_max}")
                 # 强制设置正确的值
-                self.sde.sigma_max = self.config.sigma_max
-                logger.info(f"已强制更新SDE的sigma_max为配置值: {self.config.sigma_max}")
+                self.sde.beta_max = self.config.beta_max
+                logger.info(f"已强制更新SDE的beta_max为配置值: {self.config.beta_max}")
             
             # 5. 添加score_fn（需要在corrector之前）
             self.score_fn = self._get_score_fn()
@@ -330,8 +343,8 @@ class S3GMWrapper:
         """执行预训练
         
         Args:
-            classic_data: 经典模型结果 (已标准化到[0,1])
-            gebco_data: GEBCO数据 (已标准化到[0,1])
+            classic_data: 经典模型结果 (已标准化到[-5,5])
+            gebco_data: GEBCO数据 (已标准化到[-5,5])
             save_path: 模型保存路径
         """
         try:
@@ -351,8 +364,12 @@ class S3GMWrapper:
             # 准备预训练数据（包含数据转换）
             pretrain_tensor = self._prepare_pretrain_data(classic_data, gebco_data)
             
-            # 执行预训练
-            self._run_pretrain(pretrain_tensor)
+            # 执行预训练 - 使用新的预训练函数
+            success = self._run_proper_pretrain(pretrain_tensor, num_epochs=1000)
+            
+            if not success:
+                logger.error("预训练失败，无法继续")
+                raise RuntimeError("预训练失败")
             
             # 创建保存目录（如果不存在）
             save_dir = os.path.dirname(save_path)
@@ -364,6 +381,32 @@ class S3GMWrapper:
             self._check_model_weights()
             torch.save(self.model.state_dict(), save_path)
             logger.info(f"预训练模型已保存到: {save_path}")
+            
+            # 记录当前模型配置
+            logger.info(f"模型配置信息:")
+            logger.info(f"  - 范围适配: {self.config.range_adaptation['enabled']}")
+            logger.info(f"  - 混合激活函数: {self.config.range_adaptation['use_mixed_activation']}")
+            logger.info(f"  - 陆地标记值: {self.config.range_adaptation['land_value']}")
+            
+            # 验证模型
+            logger.info(f"验证模型...")
+            self.model.eval()
+            with torch.no_grad():
+                test_input = pretrain_tensor[:, :1].clone()
+                test_t = torch.ones(1, device=self.device) * 0.5
+                B, T = test_input.shape[:2]
+                latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
+                obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
+                
+                test_score, _ = self.model(
+                    x=test_input,
+                    x0=test_input,
+                    timesteps=test_t,
+                    latent_mask=latent_mask,
+                    obs_mask=obs_mask,
+                    frame_indices=torch.arange(T, device=self.device).expand(B, -1)
+                )
+                logger.info(f"模型测试输出范围: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
             
         except Exception as e:
             logger.error(f"预训练失败: {str(e)}")
@@ -433,13 +476,7 @@ class S3GMWrapper:
             raise
 
     def _prepare_condition_data(self, measurements, measurement_coordinates, years):
-        """准备条件采样数据
-        
-        Args:
-            measurements: 已标准化的海图深度数据
-            measurement_coordinates: 测量点坐标（[0,1]范围）
-            years: 目标年份列表
-        """
+        """准备条件采样数据"""
         try:            
             H, W = self.config.image_size, self.config.image_size
             T = len(years)
@@ -460,16 +497,48 @@ class S3GMWrapper:
             for depth, (y, x) in zip(measurements, measurement_coordinates):
                 i = min(int(y * (H-1)), H-1)
                 j = min(int(x * (W-1)), W-1)
-                depth_grid[i, j] = depth
-                mask_grid[i, j] = 1.0
+                
+                # Explicitly convert numpy float to python float
+                try:
+                    depth_float = float(depth) 
+                    depth_grid[i, j] = depth_float 
+                except TypeError as e:
+                    logger.error(f"无法将深度值 {depth} (类型: {type(depth)}) 转换为 float. Error: {e}")
+                    # Handle error, e.g., skip this point or assign a default value
+                    depth_grid[i, j] = 0.0 # Or some other default like stats['invalid_value']
+                
+                mask_grid[i, j] = 1.0 # Assigning 1.0 (python float) is okay
+            
+            # 记录原始掩码 - 新增
+            original_mask = mask_grid.cpu().numpy()
+            valid_observations = np.sum(original_mask > 0)
+            logger.info(f"原始掩码观测点数量: {valid_observations}")
+            
+            # 总掩码点计数器
+            total_mask_points = 0
             
             # 对所有时间步：
             for t, year in enumerate(years):
                 # 海图深度数据（已标准化）
                 input_tensor[0, t, 2:3] = depth_grid.unsqueeze(0)
-                # 2023年的掩码
+                
+                # 修改：为所有年份设置观测掩码，但强度不同
+                # 2023年使用完整掩码
                 if year == 2023:
                     input_tensor[0, t, 3:4] = mask_grid.unsqueeze(0)
+                    total_mask_points += valid_observations
+                    logger.info(f"{year}年使用完整掩码，{valid_observations}个观测点 (100%)")
+                else:
+                    # 其他年份使用部分掩码（随机选择部分观测点）
+                    year_factor = (year - 2018) / 5.0  # 0.0到1.0
+                    partial_mask = mask_grid.clone()
+                    # 生成随机掩码（随机丢弃一部分观测点）
+                    rand_mask = torch.rand_like(partial_mask) < year_factor
+                    partial_mask = partial_mask * rand_mask
+                    input_tensor[0, t, 3:4] = partial_mask.unsqueeze(0)
+                    points_count = partial_mask.sum().item()
+                    total_mask_points += points_count
+                    logger.info(f"{year}年保留了{points_count:.0f}个观测点 ({year_factor*100:.0f}%)")
             
             # 统一掩码
             input_tensor[0, :, 4:5] = 1.0
@@ -478,12 +547,96 @@ class S3GMWrapper:
             logger.info(f"条件采样数据准备完成:")
             logger.info(f"- 输入张量形状: {input_tensor.shape}")
             logger.info(f"- 深度通道范围: [{input_tensor[0, :, 2:3].min().item():.4f}, {input_tensor[0, :, 2:3].max().item():.4f}]")
-            logger.info(f"- 掩码通道中1的数量: {(input_tensor[0, :, 3:4] > 0).sum().item()}")
+            logger.info(f"- 掩码通道中1的总数: {total_mask_points:.0f}")
+            logger.info(f"- 2023年的观测点数量: {valid_observations}")
+            
+            # 修改空间权重计算逻辑 - 继续使用原始逻辑
+            spatial_weights = None
+            
+            # 计算基于原始掩码的空间权重
+            def calculate_spatial_weights(mask, decay=None):
+                """计算基于距离的空间权重"""
+                if decay is None:
+                    decay = self.config.spatial_decay
+                    
+                # 首先确保mask是numpy数组
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.cpu().numpy()
+                    
+                # 确保mask是2D数组 - 关键修复
+                mask = mask.squeeze()  # 移除所有大小为1的维度
+                
+                H, W = mask.shape  # 现在应该是2D的
+                y_coords = np.linspace(0, 1, H)
+                x_coords = np.linspace(0, 1, W)
+                grid_y, grid_x = np.meshgrid(y_coords, x_coords, indexing='ij')
+                
+                # 获取观测点位置
+                obs_indices = np.where(mask > 0)  # 确保条件明确
+                obs_y, obs_x = obs_indices[0], obs_indices[1]  # 分别提取行和列索引
+                
+                # 确保有观测点
+                if len(obs_y) == 0:
+                    logger.warning(f"没有找到观测点，使用均匀权重")
+                    return np.ones((H, W)) * 0.5
+                    
+                # 转换为归一化坐标
+                obs_y = obs_y / (H - 1)
+                obs_x = obs_x / (W - 1)
+                
+                # 初始化权重矩阵
+                weights = np.zeros((H, W))
+                
+                # 计算每个观测点的影响
+                for y, x in zip(obs_y, obs_x):
+                    # 计算到当前观测点的距离
+                    dist = np.sqrt((grid_y - y)**2 + (grid_x - x)**2)
+                    # 使用指数衰减计算权重
+                    weight = np.exp(-dist / decay)
+                    # 更新权重矩阵（取最大值）
+                    weights = np.maximum(weights, weight)
+                
+                # 归一化权重到[0.3, 1]范围，保证即使远离观测点也有一定权重
+                if weights.max() > weights.min():
+                    weights = 0.3 + 0.7 * (weights - weights.min()) / (weights.max() - weights.min())
+                else:
+                    weights.fill(0.5)
+                    
+                return weights
+
+            # 计算时间权重
+            def calculate_time_weights(num_frames, current_frame, decay=None):
+                """计算基于时间的权重"""
+                if decay is None:
+                    decay = self.config.time_decay
+                    
+                weights = np.zeros(num_frames)
+                for i in range(num_frames):
+                    time_diff = abs(i - current_frame)
+                    weights[i] = np.exp(-time_diff * decay)
+                
+                # 归一化到[0.2, 1]范围，确保历史数据也有影响
+                weights = 0.2 + 0.8 * (weights - weights.min()) / (weights.max() - weights.min())
+                return weights
+
+            # 新的掩码权重计算逻辑
+            # 只使用原始掩码计算一次空间权重
+            spatial_weights = calculate_spatial_weights(original_mask)
+            
+            # 对每个时间步应用不同的时间权重
+            for t in range(T):
+                logger.info(f"处理时间步 {t}, 年份 {years[t]}")
+                time_weights = calculate_time_weights(T, t)
+                
+                # 将权重应用到掩码中
+                for frame in range(T):
+                    mask_weights = spatial_weights * time_weights[frame]
+                    input_tensor[0, frame, 3] = torch.from_numpy(mask_weights).to(self.device)
             
             return input_tensor
             
         except Exception as e:
-            logger.error(f"条件采样数据准备失败: {str(e)}")
+            logger.error(f"准备条件采样数据失败: {str(e)}")
             raise
 
     def _run_diffusion(
@@ -491,32 +644,47 @@ class S3GMWrapper:
         input_tensor: Union[np.ndarray, torch.Tensor], 
         transform_fn=None
     ) -> np.ndarray:
-        """执行扩散过程"""
+        """运行扩散过程"""
         try:
             # 确保SDE参数在正确设备上
-            if hasattr(self.sde, 'discrete_sigmas'):
-                self.sde.discrete_sigmas = self.sde.discrete_sigmas.to(self.device)
             if hasattr(self.sde, 'discrete_betas'):
                 self.sde.discrete_betas = self.sde.discrete_betas.to(self.device)
+            if hasattr(self.sde, 'alphas'):
+                self.sde.alphas = self.sde.alphas.to(self.device)
+            if hasattr(self.sde, 'alphas_cumprod'):
+                self.sde.alphas_cumprod = self.sde.alphas_cumprod.to(self.device)
 
             # 定义网络前向传播函数
             def net_fn(x, t):
                 B, T = x.shape[:2]
+                
+                # 准备默认掩码
+                latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
+                obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
+                
+                # 尝试从input_tensor中提取掩码通道（但不记录任何日志）
+                try:
+                    if isinstance(input_tensor, torch.Tensor):
+                        if input_tensor.shape[2] > 3:  # 检查是否有足够的通道
+                            # 提取观测掩码通道(索引3)并检查是否有非零值
+                            mask_channel = input_tensor[0, :, 3:4].to(self.device)
+                            
+                            # 对每个时间步分别处理
+                            for t_idx in range(T):
+                                if t_idx < mask_channel.shape[0]:  # 确保索引有效
+                                    # 检查当前时间步是否有观测点
+                                    if torch.any(mask_channel[t_idx] > 0):
+                                        # 将时间步标记为有观测
+                                        obs_mask[0, t_idx, 0, 0, 0] = 1.0
+                except Exception as e:
+                    # 错误时不记录任何日志，静默处理
+                    pass
                 
                 # 监控输入状态
                 if torch.isnan(x).any():
                     logger.error(f"net_fn输入x存在NaN - 形状: {x.shape}")
                     logger.error(f"时间步t: {t.item() if isinstance(t, torch.Tensor) else t}")
                     raise ValueError("net_fn输入包含NaN")
-                
-                # 准备掩码和帧索引
-                latent_mask = torch.ones([T, 1, 1, 1]).float().to(self.device)
-                obs_mask = torch.zeros([T, 1, 1, 1]).float().to(self.device)
-                frame_indices = torch.arange(T, device=self.device)
-                
-                latent_mask = latent_mask.expand(B, -1, -1, -1, -1)
-                obs_mask = obs_mask.expand(B, -1, -1, -1, -1)
-                frame_indices = frame_indices.expand(B, -1)
 
                 with torch.no_grad():
                     score, _ = self.model(
@@ -525,7 +693,7 @@ class S3GMWrapper:
                         timesteps=t,
                         latent_mask=latent_mask,
                         obs_mask=obs_mask,
-                        frame_indices=frame_indices
+                        frame_indices=torch.arange(T, device=self.device).expand(B, -1)
                     )
                     
                     # 检查score是否全为NaN
@@ -613,98 +781,52 @@ class S3GMWrapper:
                 logger.error(f"  - sampling steps: {self.config.sampling['num_steps']}")
                 raise
             
-            # 检查结果
-            if np.isnan(result_np).any():
-                nan_count = np.isnan(result_np).sum()
-                logger.error(f"扩散结果包含 {nan_count} 个NaN值")
-                logger.error(f"结果统计: min={np.nanmin(result_np):.4f}, "
-                           f"max={np.nanmax(result_np):.4f}")
-                raise ValueError("扩散结果包含NaN")
+            # 修改结果处理部分
+            def process_results(result_tensor):
+                # 首先检查是否是张量，如果是则转换为numpy
+                if isinstance(result_tensor, torch.Tensor):
+                    result_np = result_tensor.cpu().numpy()
+                else:
+                    result_np = result_tensor  # 已经是numpy数组
+
+                # 识别陆地区域（使用配置中的land_value）
+                land_mask = np.abs(result_np - self.config.land_value) < 0.1
+                
+                # 只记录数据范围，不做任何裁剪
+                valid_data = result_np[~land_mask & ~np.isnan(result_np)]
+                if len(valid_data) > 0:
+                    orig_min, orig_max = np.min(valid_data), np.max(valid_data)
+                    logger.info(f"原始结果范围: [{orig_min:.4f}, {orig_max:.4f}]")
+                
+                # 保持陆地区域的值不变
+                result_np[land_mask] = self.config.land_value
         
             return result_np
+
+            # 在扩散过程结束后处理结果
+            result = result_np  # 先保存原始结果
+            
+            # 如果有变换函数，应用它
+            if transform_fn is not None:
+                result = transform_fn(result)
+            
+            # 最后进行一次process_results，但只是为了记录范围
+            result = process_results(result)
+            
+            return result
             
         except Exception as e:
-            logger.error(f"扩散过程执行失败: {str(e)}")
-            if 'x' in locals():
-                logger.error(f"输入张量形状: {x.shape}")
-                logger.error(f"输入范围: [{x.min().item():.4f}, {x.max().item():.4f}]")
-            logger.error(f"channel_modal配置: {self.config.channel_modal}")
-            raise
-
-    def _run_pretrain(self, input_tensor):
-        """执行预训练"""
-        try:
-            def adaptive_transform_pretrain(x):
-                """预训练时的自适应数据转换函数"""
-                if isinstance(x, np.ndarray):
-                    x = torch.from_numpy(x).to(self.device)
-            
-                # 识别陆地
-                land_mask = torch.abs(x - 1.5) < 0.1
-                
-                # 首先处理NaN和无穷值
-                x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0, posinf=5.0, neginf=-5.0))
-                
-                # 处理数值过大的情况，但不强制裁剪到[-1,1]
-                # 只将超出[-5,5]范围的值压缩回该范围
-                sea_mask = ~land_mask
-                x = torch.where(sea_mask & (x > 5.0), 5.0, x)
-                x = torch.where(sea_mask & (x < -5.0), -5.0, x)
-                
-                # 记录数据范围 - 只在第一次调用时记录
-                if not hasattr(adaptive_transform_pretrain, "logged"):
-                    if torch.isfinite(x).any():
-                        min_val = x[torch.isfinite(x)].min().item()
-                        max_val = x[torch.isfinite(x)].max().item()
-                        logger.info(f"预训练数据范围: [{min_val:.4f}, {max_val:.4f}]")
-                    adaptive_transform_pretrain.logged = True
-            
-                return x
-
-            # 在执行扩散过程前调整input_tensor
-            nf = self.config.num_frames
-            ns = self.config.sampling['num_steps']
-            ol = self.config.sampling['overlap']
-            b = int(ns // (nf - ol) + 1)
-            ns_real = b * (nf - ol) + ol
-        
-            # 创建调整后的input_tensor
-            adjusted_input_tensor = torch.zeros(
-                (1, ns_real, input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4]), 
-                device=self.device
-            )
-        
-            # 按照x_to_sample的逻辑填充adjusted_input_tensor
-            for i in range(b):
-                i_inv = b - i - 1
-                start_idx = i_inv * (nf - ol)
-                end_idx = start_idx + nf
-                # 复制主要通道数据
-                adjusted_input_tensor[:, start_idx:end_idx, :input_tensor.shape[2]] = input_tensor[:, :, :input_tensor.shape[2]]
-        
-            # 复制掩码等辅助通道
-            adjusted_input_tensor[:, :, input_tensor.shape[2]:] = input_tensor[:, 0:1, input_tensor.shape[2]:]
-        
-            logger.info(f"预训练阶段调整input_tensor形状: {input_tensor.shape} -> {adjusted_input_tensor.shape}")
-        
-            # 执行扩散过程
-            return self._run_diffusion(
-                adjusted_input_tensor,
-                transform_fn=adaptive_transform_pretrain
-            )
-        
-        except Exception as e:
-            logger.error(f"预训练运行失败: {str(e)}")
+            logger.error(f"扩散过程失败: {str(e)}")
             raise
 
     def _run_sampling(self, input_tensor):
         """执行条件采样"""
         try:
             def adaptive_transform_sampling(x):
-                """采样时的自适应数据转换函数"""
+                """采样时的自适应数据转换函数 (移除硬裁剪)"""
                 if isinstance(x, np.ndarray):
                     x = torch.from_numpy(x).to(self.device)
-            
+
                 # 安全地获取掩码
                 try:
                     mask = torch.zeros((x.shape[-2], x.shape[-1]), device=self.device)
@@ -718,48 +840,56 @@ class S3GMWrapper:
                 # 识别陆地
                 land_mask = torch.abs(x - 1.5) < 0.1
                 
-                # 首先处理NaN和无穷值
+                # 处理NaN和无穷值 (保持，但可以用更宽的范围，例如匹配x0_hat?)
+                # 例如： torch.nan_to_num(x, nan=0.0, posinf=20.0, neginf=-20.0)
+                # 或者暂时保持 +/- 5
                 x = torch.where(land_mask, x, torch.nan_to_num(x, nan=0.0, posinf=5.0, neginf=-5.0))
-                
-                # 处理数值过大的情况，但仍保持在较广的范围内
-                # 只将超出[-5,5]范围的值压缩回该范围
-                sea_mask = ~land_mask
-                x = torch.where(sea_mask & (x > 5.0), 5.0, x)
-                x = torch.where(sea_mask & (x < -5.0), -5.0, x)
-                
+
                 # 记录数据范围 - 只在第一次调用时记录
                 if not hasattr(adaptive_transform_sampling, "logged"):
                     if torch.isfinite(x).any():
                         min_val = x[torch.isfinite(x)].min().item()
                         max_val = x[torch.isfinite(x)].max().item()
-                        logger.info(f"采样数据范围: [{min_val:.4f}, {max_val:.4f}]")
+                        logger.info(f"采样数据范围 (transform_fn): [{min_val:.4f}, {max_val:.4f}]") # 修改日志标签
                     adaptive_transform_sampling.logged = True
-            
+
                 return x
 
             # 调整input_tensor
-            nf = self.config.num_frames
-            ns = self.config.sampling['num_steps']
-            ol = self.config.sampling['overlap']
-            b = int(ns // (nf - ol) + 1)
-            ns_real = b * (nf - ol) + ol
-        
-            # 创建调整后的input_tensor
-            adjusted_input_tensor = torch.zeros(
-                (1, ns_real, input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4]), 
-                device=self.device
-            )
-        
-            # 填充adjusted_input_tensor
-            for i in range(b):
-                i_inv = b - i - 1
-                start_idx = i_inv * (nf - ol)
-                end_idx = start_idx + nf
-                adjusted_input_tensor[:, start_idx:end_idx, :input_tensor.shape[2]] = input_tensor[:, :, :input_tensor.shape[2]]
-        
-            adjusted_input_tensor[:, :, input_tensor.shape[2]:] = input_tensor[:, 0:1, input_tensor.shape[2]:]
-        
-            logger.info(f"调整input_tensor形状: {input_tensor.shape} -> {adjusted_input_tensor.shape}")
+            try:
+                nf = self.config.num_frames
+                ns = self.config.sampling['num_steps']
+                ol = self.config.sampling['overlap']
+                b = max(1, int(ns // max(1, (nf - ol))) + 1)  # 防止除零
+                ns_real = b * (nf - ol) + ol
+            
+                # 创建调整后的input_tensor
+                adjusted_input_tensor = torch.zeros(
+                    (1, ns_real, input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4]), 
+                    device=self.device
+                )
+            
+                # 填充adjusted_input_tensor
+                for i in range(b):
+                    i_inv = b - i - 1
+                    start_idx = i_inv * (nf - ol)
+                    end_idx = min(start_idx + nf, ns_real)
+                    if start_idx < ns_real:
+                        src_end = min(nf, end_idx-start_idx)
+                        if src_end > 0:
+                            src_data = input_tensor[:, :src_end, :input_tensor.shape[2]]
+                            adjusted_input_tensor[:, start_idx:start_idx+src_end, :input_tensor.shape[2]] = src_data
+            
+                # 复制辅助通道
+                if input_tensor.shape[2] < adjusted_input_tensor.shape[2]:
+                    aux_channels = input_tensor[:, 0:1, input_tensor.shape[2]:]
+                    adjusted_input_tensor[:, :, input_tensor.shape[2]:] = aux_channels
+            
+                logger.info(f"调整input_tensor形状: {input_tensor.shape} -> {adjusted_input_tensor.shape}")
+            except Exception as e:
+                logger.error(f"调整input_tensor时出错: {e}")
+                # 在出错时使用原始input_tensor
+                adjusted_input_tensor = input_tensor
         
             # 执行扩散过程
             return self._run_diffusion(
@@ -770,6 +900,104 @@ class S3GMWrapper:
         except Exception as e:
             logger.error(f"条件采样运行失败: {str(e)}")
             raise
+
+    def _run_proper_pretrain(self, input_tensor, num_epochs=300, batch_size=1, save_interval=50):
+        """使用标准扩散损失函数执行预训练"""
+        try:
+            # 确保输入是tensor并在正确设备上
+            if isinstance(input_tensor, np.ndarray):
+                x = torch.from_numpy(input_tensor).to(self.device)
+            else:
+                x = input_tensor.to(self.device)
+            
+            if x.dtype != torch.float32:
+                x = x.float()
+            
+            # 初始化优化器
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+            
+            # 添加学习率调度器
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+            
+            # 训练循环
+            for epoch in tqdm(range(num_epochs), desc="预训练进度"):
+                self.model.train()
+                optimizer.zero_grad()
+                
+                # 随机生成时间步
+                t = torch.rand(batch_size, device=self.device) * (1.0 - 1e-5) + 1e-5
+                
+                # 添加随机噪声
+                mean, std = self.sde.marginal_prob(x, t)
+                z = torch.randn_like(x)
+                perturbed_x = mean + std[:, None, None, None, None] * z
+                
+                # 准备模型输入参数
+                B, T = perturbed_x.shape[:2]
+                latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
+                obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
+                
+                # 前向传播，计算损失
+                score, _ = self.model(
+                    x=perturbed_x,
+                    x0=perturbed_x,  # 在预训练阶段，x0 和 x 相同
+                    timesteps=t,
+                    latent_mask=latent_mask,
+                    obs_mask=obs_mask,
+                    frame_indices=torch.arange(T, device=self.device).expand(B, -1)
+                )
+                
+                # 计算损失：预测噪声 z
+                losses = torch.square(score * std[:, None, None, None, None] + z)
+                loss = torch.mean(losses)
+                
+                # 监控数据范围（每50个epoch）
+                if epoch % 25 == 0 or epoch == num_epochs - 1:
+                    print(f"数据监控[第{epoch}步]: 范围=[{perturbed_x.min().item():.4f}, {perturbed_x.max().item():.4f}], "
+                          f"均值={perturbed_x.mean().item():.4f}, 标准差={perturbed_x.std().item():.4f}, "
+                          f"loss={loss.item():.6f}")
+                
+                # 反向传播和优化
+                loss.backward()
+                
+                # 梯度裁剪以增加稳定性
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                scheduler.step()
+                
+                # 定期保存检查点
+                if (epoch + 1) % save_interval == 0 or epoch == num_epochs - 1:
+                    # 记录当前模型配置
+                    logger.info(f"模型配置信息:")
+                    logger.info(f"  - 范围适配: {self.config.range_adaptation['enabled']}")
+                    logger.info(f"  - 混合激活函数: {self.config.range_adaptation['use_mixed_activation']}")
+                    logger.info(f"  - 陆地标记值: {self.config.range_adaptation['land_value']}")
+                    
+                    # 验证模型
+                    self.model.eval()
+                    
+                    # 使用一个简单的样本测试模型输出
+                    with torch.no_grad():
+                        test_t = torch.ones(1, device=self.device) * 0.5
+                        test_x = torch.randn_like(x)
+                        test_score, _ = self.model(
+                            x=test_x,
+                            x0=test_x,
+                            timesteps=test_t,
+                            latent_mask=latent_mask,
+                            obs_mask=obs_mask,
+                            frame_indices=torch.arange(T, device=self.device).expand(B, -1)
+                        )
+                        logger.info(f"模型测试输出范围: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
+            
+            return True
+        
+        except Exception as e:
+            logger.error(f"预训练失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
 
     def _check_model_weights(self):
         """检查模型权重的有效性，并以更低的日志级别报告"""
@@ -839,7 +1067,6 @@ class S3GMWrapper:
                     obs_mask=obs_mask,
                     frame_indices=frame_indices
                 )
-                score = torch.clamp(score, -1.0, 1.0)  # 添加梯度裁剪
                 return score
         
         return score_fn
