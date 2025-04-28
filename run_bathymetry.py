@@ -23,6 +23,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from joblib import dump, load
 from typing import List, Dict, Optional, Tuple, Union
+from PIL import Image
+import matplotlib.gridspec
+import matplotlib.ticker as mticker
 
 # 配置日志
 logging.basicConfig(
@@ -287,7 +290,38 @@ def stage1_8_model_validation(sentinel_time_series):
         # 2. 创建输出目录
         output_dir = 'results/classic_models'
         os.makedirs(output_dir, exist_ok=True)
+
+        # --- Load Land Mask (similar to stage 3) ---
+        mask_file = 'results/s3gm_visualization/land_water_mask.tif' # Path to mask
+        land_mask_array = None
+        try:
+            mask_image = Image.open(mask_file)
+            H_target, W_target = 64, 64
+            mask_image_resized = mask_image.resize((W_target, H_target), Image.NEAREST)
+            land_mask_array = np.array(mask_image_resized)
+            logger.info(f"Successfully loaded and resized land/water mask for RF plot from {mask_file}")
+        except FileNotFoundError:
+            logger.warning(f"Land/water mask file not found: {mask_file}. RF time series plot will not have overlay.")
+        except Exception as e:
+            logger.error(f"Error loading or processing land/water mask for RF plot: {e}. Skipping overlay.")
+        # --------------------------------------------
         
+        # Load nautical charts needed for coordinates
+        try:
+            import ee
+            if not ee.data._credentials:
+                 ee.Authenticate()
+                 ee.Initialize(project='fast-banner-452901-c8')
+        except ImportError:
+             logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
+             raise
+        except Exception as e:
+             logger.error(f"GEE initialization failed: {e}")
+             raise
+        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        preprocessor = DataPreprocessor(region=aoi)
+        nautical_charts = preprocessor.get_sparse_points()
+
         # 4. 预测所有年份
         depths = []
         years = range(2018, 2024)
@@ -296,109 +330,182 @@ def stage1_8_model_validation(sentinel_time_series):
             green = sentinel_time_series['green'][t]
             depth = classic_models.predict_rf(blue, green)
             depths.append(depth)
-            np.save(os.path.join(output_dir, f'rf_{year}.npy'), depth)
             logger.info(f"Completed prediction for year {year}")
         
-        # 5. 创建时序合成图
-        create_time_series_plot(depths, years, 'rf', output_dir)
+        # 5. 创建并保存时序合成图 (pass land mask and chart coords)
+        chart_coords_rf = nautical_charts['coordinates'] # Get coordinates
+        create_time_series_plot(depths, years, 'rf', output_dir, land_mask_array=land_mask_array, chart_coords=chart_coords_rf)
         
         # 6. 2023年预测结果与海图数据对比
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
-        preprocessor = DataPreprocessor(region=aoi)
-        nautical_charts = preprocessor.get_sparse_points()
-        
         # 获取2023年的预测结果和实际海图数据
         t = -1  # 2023年的索引
         predicted_depth = depths[t]
-        H, W = predicted_depth.shape
-        
-        # 提取海图位置对应的预测值
+        # H, W defined earlier during mask loading or prediction
+        if 'H' not in locals(): H, W = predicted_depth.shape
+
+        # 提取海图位置对应的预测值 (nautical_charts is already loaded)
         coords = nautical_charts['coordinates']
         true_depths = np.abs(nautical_charts['depths'])
-        
+
         predicted_values = []
         valid_true_depths = []
-        
+
         for i, (y, x) in enumerate(coords):
             y_idx = int(y * (H - 1))
             x_idx = int(x * (W - 1))
             if 0 <= y_idx < H and 0 <= x_idx < W:
                 pred_value = predicted_depth[y_idx, x_idx]
-                if not np.isnan(pred_value) and pred_value > 0:
+                if np.isfinite(pred_value) and pred_value > 0:
                     predicted_values.append(pred_value)
                     valid_true_depths.append(true_depths[i])
-        
+
         predicted_values = np.array(predicted_values)
         valid_true_depths = np.array(valid_true_depths)
-        
+
         # 计算验证指标
-        rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
-        mae = np.mean(np.abs(predicted_values - valid_true_depths))
-        r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
-        
-        logger.info("Validation Results:")
+        rmse = np.nan
+        mae = np.nan
+        r2 = np.nan
+        if len(valid_true_depths) > 0 and len(predicted_values) > 0:
+            rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
+            mae = np.mean(np.abs(predicted_values - valid_true_depths))
+            denom = np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
+            if denom > 1e-9: # Avoid division by zero
+                r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / denom
+            else:
+                r2 = 0.0 # Or handle as undefined
+        logger.info("RF Validation Results (2023):")
         logger.info(f"RMSE: {rmse:.2f} m")
         logger.info(f"MAE: {mae:.2f} m")
         logger.info(f"R²: {r2:.4f}")
-        
-        # 创建散点图
-        plt.figure(figsize=(8, 8))
-        plt.scatter(valid_true_depths, predicted_values, alpha=0.5)
-        plt.plot([0, max(valid_true_depths)], [0, max(valid_true_depths)], 'r--')
-        plt.xlabel('Measured Depth (m)')
-        plt.ylabel('Predicted Depth (m)')
-        plt.title('RF Model Validation (2023)')
-        plt.text(0.05, 0.95, f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}',
-                transform=plt.gca().transAxes, bbox=dict(facecolor='white', alpha=0.8))
-        plt.savefig(os.path.join(output_dir, 'rf_validation_2023.jpg'), dpi=600, bbox_inches='tight')
-        plt.close()
-        
+        logger.info(f"Number of points: {len(valid_true_depths)}")
+        # Create and save Scatter Plot
+        FONTSIZE_MAIN_LABELS = 12
+        FONTSIZE_MAIN_TICKS = 10
+        FONTSIZE_TEXT_BOX = 10 # Slightly smaller for text box
+        fig_scatter = plt.figure(figsize=(7, 5.5)) # Match RF plot aspect ratio
+        ax_scatter = fig_scatter.add_subplot(1, 1, 1)
+        if len(valid_true_depths) > 0 and len(predicted_values) > 0 and np.isfinite(r2):
+            scatter = ax_scatter.scatter(valid_true_depths, predicted_values, alpha=0.6, s=30, label='Samples')
+            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')  # Match RF plot
+            ax_scatter.set_xlim(0, 75)
+            ax_scatter.set_ylim(0, 75)
+            # Use RF metrics, format matches RF plot (no N)
+            text_str = f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}'
+            ax_scatter.text(0.95, 0.05, text_str,
+                      transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
+                      verticalalignment='bottom', horizontalalignment='right',
+                      bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+            ax_scatter.legend(loc='upper left') # Match RF plot
+        else:
+            ax_scatter.text(0.5, 0.5, 'No valid data for scatter plot', ha='center', va='center')
+            ax_scatter.set_xlim(0, 75) # Still set limits even if no data
+            ax_scatter.set_ylim(0, 75)
+
+        ax_scatter.set_xlabel('Measured Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
+        ax_scatter.set_ylabel('Predicted Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
+        ax_scatter.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
+        ax_scatter.grid(True, linestyle='--', alpha=0.6) # Match RF plot
+        # No title, matching RF plot
+        fig_scatter.tight_layout()
+        save_path_scatter = os.path.join(output_dir, 'rf_validation_2023.jpg') # Correct filename
+        plt.savefig(save_path_scatter, dpi=600, bbox_inches='tight')
+        logger.info(f"RF Scatter plot saved to: {save_path_scatter}")
+        plt.close(fig_scatter) # Close the specific figure
+
     except Exception as e:
         logger.error(f"Classic model validation failed: {str(e)}")
         raise
 
-def create_time_series_plot(depths, years, model_name, output_dir):
+def create_time_series_plot(depths, years, model_name, output_dir, land_mask_array=None, chart_coords=None):
     """创建时序合成图"""
     try:
-        plt.figure(figsize=(15, 10))
+        # Increase font sizes for better visibility when shrunk in Word column
+        FONTSIZE_MAIN_LABELS = 14  # Axes labels, colorbar label
+        FONTSIZE_MAIN_TICKS = 12   # Tick labels, base for subplot title
         
-        # 直接使用原始深度数据，不进行插值
+        plt.rcParams.update({'font.size': FONTSIZE_MAIN_TICKS})
+        fig = plt.figure(figsize=(12, 8))
+
         num_years = len(years)
         num_cols = 3
         num_rows = (num_years + num_cols - 1) // num_cols
         
-        # 计算所有深度数据的范围
         all_valid_depths = []
         for depth in depths:
             valid_depths = depth[~np.isnan(depth) & (depth > 0)]
             if len(valid_depths) > 0:
                 all_valid_depths.extend(valid_depths)
-        
         vmin = 0
-        vmax = np.percentile(all_valid_depths, 99)
+        vmax = 75
+
+        extent = [122.35, 122.6, 30.62, 30.8]
+        im = None
+
+        def lon_formatter(x, pos): return f'{x:.1f}°E'
+        def lat_formatter(y, pos): return f'{y:.1f}°N'
         
         for i, (depth, year) in enumerate(zip(depths, years)):
-            plt.subplot(num_rows, num_cols, i + 1)
-            # 使用原始深度数据绘图
-            im = plt.imshow(depth, cmap='viridis', vmin=vmin, vmax=vmax)
-            plt.title(str(year))
-            plt.axis('off')
+            ax = plt.subplot(num_rows, num_cols, i + 1)
+            # Add interpolation for smoother look
+            current_im = ax.imshow(depth, cmap='ocean', vmin=vmin, vmax=vmax, extent=extent, origin='upper', aspect='auto', interpolation='bicubic') 
+            if i == 0: im = current_im
+
+            # Conditional overlay for 2023 only
+            if year == 2023 and chart_coords is not None and len(chart_coords) > 0:
+                 # Convert normalized [0,1] coordinates (y, x) to plot coordinates (lon, lat)
+                 min_lon, max_lon, min_lat, max_lat = extent
+                 plot_lon = min_lon + chart_coords[:, 1] * (max_lon - min_lon)
+                 plot_lat = min_lat + chart_coords[:, 0] * (max_lat - min_lat)
+ 
+                 # Plot points as small open circles (thinner edge)
+                 ax.scatter(plot_lon, plot_lat, s=8, facecolors='none', edgecolors='white', linewidths=0.4, alpha=0.9, label='Chart Points')
+                 # Add legend only to the 2023 subplot
+                 #ax.legend(loc='upper right', fontsize=FONTSIZE_MAIN_TICKS - 2, frameon=True, framealpha=0.7, facecolor='white')
+            # --------------------------
+
+            ax.set_title(str(year), fontsize=FONTSIZE_MAIN_TICKS + 2) # Now 14pt
+            ax.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
+
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(0.1))
+            ax.yaxis.set_major_locator(mticker.MultipleLocator(0.1))
+            ax.xaxis.set_major_formatter(mticker.FuncFormatter(lon_formatter))
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lat_formatter))
             
-            # 添加统计信息
-            valid_pixels = np.sum(~np.isnan(depth) & (depth > 0))
-            total_pixels = depth.size
-            coverage = valid_pixels / total_pixels * 100
-            logger.info(f"{year}年有效像素覆盖率: {coverage:.2f}%")
-        
+            # Only show tick labels on the outer plots
+            if i >= num_years - num_cols:
+                pass
+            else:
+                ax.tick_params(axis='x', labelbottom=False)
+
+            if i % num_cols == 0:
+                pass
+            else:
+                 ax.tick_params(axis='y', labelleft=False)
+
+            # --- Overlay land mask ---
+            if land_mask_array is not None:
+                land_color = [0.5, 0.3, 0.1, 0.9] # RGBA for dark brown, more opaque
+                water_color = [0, 0, 0, 0]
+                cmap_land = colors.ListedColormap([land_color, water_color])
+                bounds = [-0.5, 0.5, 1.5]
+                norm_land = colors.BoundaryNorm(bounds, cmap_land.N)
+                ax.imshow(land_mask_array, cmap=cmap_land, norm=norm_land, interpolation='nearest', zorder=10, extent=extent, origin='upper', aspect='auto')
+            # -------------------------
+
         # 添加colorbar
-        plt.subplots_adjust(bottom=0.1, right=0.9, top=0.9)
-        cax = plt.axes([0.15, 0.05, 0.7, 0.02])
-        plt.colorbar(im, cax=cax, orientation='horizontal', label='Depth (m)')
-        
-        plt.suptitle(f'{model_name.upper()} Model Bathymetry Predictions {years[0]}-{years[-1]}')
-        plt.savefig(os.path.join(output_dir, f'{model_name}_time_series.jpg'), 
-                   dpi=600, bbox_inches='tight')
-        plt.close()
+        if im:
+            fig.tight_layout(rect=[0, 0.05, 1, 0.95])
+            cax = fig.add_axes([0.15, 0.03, 0.7, 0.03])
+            cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
+            cbar.set_label('Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
+            cbar.ax.tick_params(labelsize=FONTSIZE_MAIN_TICKS)
+
+        # Save the time series plot
+        save_path = os.path.join(output_dir, f'{model_name}_time_series.jpg')
+        plt.savefig(save_path, dpi=600, bbox_inches='tight')
+        logger.info(f"Time series plot saved to: {save_path}")
+        plt.close(fig) # Close the figure
         
     except Exception as e:
         logger.error(f"创建时序合成图失败: {str(e)}")
@@ -410,9 +517,10 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
         # 创建必要的目录
         results_dir = 'results'
         models_dir = os.path.join(results_dir, 's3gm_pretrained_models')  
+        time_series_dir = os.path.join(results_dir, 's3gm_time_series') 
         os.makedirs(results_dir, exist_ok=True)
         os.makedirs(models_dir, exist_ok=True)
-        
+        os.makedirs(time_series_dir, exist_ok=True)
         # Stage 2.1: 预训练
         pretrained_model_path = os.path.join(models_dir, 's3gm_pretrained.pth')
         if not os.path.exists(pretrained_model_path):
@@ -444,6 +552,11 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
             # 保存统计信息，用于后续反标准化
             np.save('intermediate_results/classic_stats.npy', classic_stats)
             np.save('intermediate_results/gebco_stats.npy', gebco_stats)
+            
+            # *** 新增：保存归一化后的数据 ***
+            np.save('intermediate_results/classic_normalized.npy', normalized_classic)
+            np.save('intermediate_results/gebco_normalized.npy', normalized_gebco)
+            logger.info("已保存归一化后的经典模型和GEBCO数据")
             
             pretrain_data = {
                 'classic': normalized_classic,  # 现在是[0,1]范围
@@ -489,7 +602,9 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
         # Stage 2.2: 条件采样
         logger.info("执行Stage 2.2: 条件采样阶段")
         # 获取2023年海图数据
-        nautical_charts = system.preprocessor.get_sparse_points()
+        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        preprocessor = DataPreprocessor(region=aoi)
+        nautical_charts = preprocessor.get_sparse_points()
         
         # 对海图数据进行标准化
         preprocessor = DataPreprocessor()
@@ -509,11 +624,19 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
             'coordinates': nautical_charts['coordinates']
         }
         
-        # 执行条件采样
+        # 加载预处理数据
+        # 注意：这里假设 classic_data 和 gebco_data 已经是归一化后的
+        # 你可能需要先加载它们，然后使用 preprocessor 进行归一化
+        classic_data_normalized = np.load('intermediate_results/classic_normalized.npy') # 假设已保存归一化的经典模型数据
+        gebco_data_normalized = np.load('intermediate_results/gebco_normalized.npy') # 假设已保存归一化的GEBCO数据
+
+        # 执行条件采样 - 传入经典模型和GEBCO数据
         results = system.s3gm.conditional_sampling(
             measurements=nautical_charts_normalized['depths'],
             measurement_coordinates=nautical_charts_normalized['coordinates'],
-            years=sentinel_years
+            years=sentinel_years,
+            classic_data=classic_data_normalized, # 传入归一化的经典数据
+            gebco_data=gebco_data_normalized      # 传入归一化的GEBCO数据
         )
         
         # 在保存结果之前，检查results的形状和内容
@@ -524,7 +647,7 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
         save_results(
             depths=results,
             years=sentinel_years,
-            output_dir=results_dir,
+            output_dir=time_series_dir,
             chart_stats=chart_stats  # 确保传入chart_stats
         )
         
@@ -535,99 +658,215 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
 def stage3_postprocessing():
     """第三阶段：后处理分析"""
     try:
-        # 1. 创建输出目录
         output_dir = 'results/s3gm_visualization'
         os.makedirs(output_dir, exist_ok=True)
-        
-        # 2. 加载所有年份的预测结果
+
         depths = []
         years = range(2018, 2024)
         for year in years:
             depth = np.load(f'results/s3gm_time_series/bathymetry_{year}.npy')
             depths.append(depth)
-            
-        # 3. 创建时序合成图
-        create_time_series_plot(depths, years, 's3gm', output_dir)
-        
-        # 4. 2023年预测结果与海图数据对比
+
+        mask_file = 'results/s3gm_visualization/land_water_mask.tif' # Corrected path
+        land_mask_array = None
+        try:
+            mask_image = Image.open(mask_file)
+            H, W = depths[0].shape
+            mask_image_resized = mask_image.resize((W, H), Image.NEAREST)
+            land_mask_array = np.array(mask_image_resized)
+            logger.info(f"Successfully loaded and resized land/water mask from {mask_file}")
+        except FileNotFoundError:
+            logger.warning(f"Land/water mask file not found: {mask_file}. Skipping overlay.")
+        except Exception as e:
+            logger.error(f"Error loading or processing land/water mask: {e}. Skipping overlay.")
+
+        try:
+            import ee
+            if not ee.data._credentials:
+                 ee.Authenticate()
+                 ee.Initialize(project='fast-banner-452901-c8')
+        except ImportError:
+             logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
+             raise
+        except Exception as e:
+             logger.error(f"GEE initialization failed: {e}")
+             raise
+
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
-        
-        # 获取2023年的预测结果和实际海图数据
-        t = -1  # 2023年的索引
+
+        chart_coords_s3gm = nautical_charts['coordinates'] # Get coordinates
+        # Create time-series composite plot, passing the mask and chart coords
+        create_time_series_plot(depths, years, 's3gm', output_dir, land_mask_array, chart_coords=chart_coords_s3gm)
+
+        # Validation part (Now starts here)
+        t = -1
         predicted_depth = depths[t]
-        H, W = predicted_depth.shape
-        
-        # 提取海图位置对应的预测值
+        # H, W defined earlier during mask loading
+
         coords = nautical_charts['coordinates']
         true_depths = np.abs(nautical_charts['depths'])
-        
+
         predicted_values = []
         valid_true_depths = []
-        
+
+        # Extract valid points using the original predicted_depth before masking for plotting
         for i, (y, x) in enumerate(coords):
             y_idx = int(y * (H - 1))
             x_idx = int(x * (W - 1))
             if 0 <= y_idx < H and 0 <= x_idx < W:
                 pred_value = predicted_depth[y_idx, x_idx]
-                if not np.isnan(pred_value) and pred_value > 0:
+                if np.isfinite(pred_value) and pred_value > 0:
                     predicted_values.append(pred_value)
                     valid_true_depths.append(true_depths[i])
-        
+
         predicted_values = np.array(predicted_values)
         valid_true_depths = np.array(valid_true_depths)
-        
-        # 计算验证指标
-        rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
-        mae = np.mean(np.abs(predicted_values - valid_true_depths))
-        r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
-        
+
+        if len(valid_true_depths) > 0 and len(predicted_values) > 0:
+            rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
+            mae = np.mean(np.abs(predicted_values - valid_true_depths))
+            denom = np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
+            r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / denom if denom != 0 else -np.inf
+        else:
+            rmse, mae, r2 = np.nan, np.nan, np.nan
+            logger.warning("No valid overlapping points found for validation.")
+
         logger.info("S3GM Model Validation Results:")
-        logger.info(f"RMSE: {rmse:.2f} m")
-        logger.info(f"MAE: {mae:.2f} m")
-        logger.info(f"R²: {r2:.4f}")
+        logger.info(f"RMSE: {rmse:.2f} m" if np.isfinite(rmse) else "RMSE: N/A")
+        logger.info(f"MAE: {mae:.2f} m" if np.isfinite(mae) else "MAE: N/A")
+        logger.info(f"R²: {r2:.4f}" if np.isfinite(r2) else "R²: N/A")
         logger.info(f"Number of validation points: {len(valid_true_depths)}")
-        
-        # 创建散点图
-        plt.figure(figsize=(8, 8))
-        plt.scatter(valid_true_depths, predicted_values, alpha=0.5)
-        max_depth = max(valid_true_depths.max(), predicted_values.max())
-        plt.plot([0, max_depth], [0, max_depth], 'r--')
-        plt.xlim(0, max_depth)
-        plt.ylim(0, max_depth)
-        plt.xlabel('Measured Depth (m)')
-        plt.ylabel('Predicted Depth (m)')
-        plt.title('S3GM Model Validation 2023')
-        plt.text(0.05, 0.95, f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}\nN: {len(valid_true_depths)}',
-                transform=plt.gca().transAxes, bbox=dict(facecolor='white', alpha=0.8))
-        plt.savefig(os.path.join(output_dir, 's3gm_validation_2023.jpg'), dpi=600, bbox_inches='tight')
-        plt.close()
-        
-        # 5. 创建与经典模型的对比图
-        rf_2023 = np.load('results/classic_models/rf_2023.npy')
-        s3gm_2023 = depths[-1]
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # 设置共同的colorbar范围
-        vmin = 0
-        vmax = max(np.nanpercentile(rf_2023, 99), np.nanpercentile(s3gm_2023, 99))
-        
-        im1 = ax1.imshow(rf_2023, cmap='viridis', vmin=vmin, vmax=vmax)
-        ax1.set_title('RF Model (2023)')
-        ax1.axis('off')
-        
-        im2 = ax2.imshow(s3gm_2023, cmap='viridis', vmin=vmin, vmax=vmax)
-        ax2.set_title('S3GM Model (2023)')
-        ax2.axis('off')
-        
-        cbar_ax = fig.add_axes([0.15, 0.05, 0.7, 0.02])
-        cbar = fig.colorbar(im1, cax=cbar_ax, orientation='horizontal', label='Depth (m)')
-        
-        plt.savefig(os.path.join(output_dir, 'model_comparison_2023.jpg'), dpi=600, bbox_inches='tight')
-        plt.close()
-        
+
+        # Create scatter plot with the same style as RF validation
+        FONTSIZE_MAIN_LABELS = 12
+        FONTSIZE_MAIN_TICKS = 10
+        FONTSIZE_TEXT_BOX = 10 # Slightly smaller for text box
+        fig_scatter = plt.figure(figsize=(7, 5.5)) # Match RF plot aspect ratio
+        ax_scatter = fig_scatter.add_subplot(1, 1, 1)
+        if len(valid_true_depths) > 0 and len(predicted_values) > 0 and np.isfinite(r2):
+            scatter = ax_scatter.scatter(valid_true_depths, predicted_values, alpha=0.6, s=30, label='Samples')
+            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')  # Match RF plot
+            ax_scatter.set_xlim(0, 75)
+            ax_scatter.set_ylim(0, 75)
+            # Use S3GM metrics, format matches RF plot (no N)
+            text_str = f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}' 
+            ax_scatter.text(0.95, 0.05, text_str,
+                      transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
+                      verticalalignment='bottom', horizontalalignment='right',
+                      bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+            ax_scatter.legend(loc='upper left') # Match RF plot
+        else:
+            ax_scatter.text(0.5, 0.5, 'No valid data for scatter plot', ha='center', va='center')
+            ax_scatter.set_xlim(0, 75) # Still set limits even if no data
+            ax_scatter.set_ylim(0, 75)
+
+        ax_scatter.set_xlabel('Measured Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
+        ax_scatter.set_ylabel('Predicted Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
+        ax_scatter.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
+        ax_scatter.grid(True, linestyle='--', alpha=0.6) # Match RF plot
+        # No title, matching RF plot
+        fig_scatter.tight_layout()
+        save_path_scatter = os.path.join(output_dir, 's3gm_validation_2023.jpg') # Correct filename
+        plt.savefig(save_path_scatter, dpi=600, bbox_inches='tight')
+        logger.info(f"S3GM Scatter plot saved to: {save_path_scatter}")
+        plt.close(fig_scatter) # Close the specific figure
+
+        # --- End of S3GM Scatter Plot ---
+
+        def lon_formatter(x, pos): return f'{x:.1f}°E'
+        def lat_formatter(y, pos): return f'{y:.1f}°N'
+
+        # --- Generate Difference Map (S3GM - RF) for 2023 ---
+        try:
+            # Load RF 2023 results (assuming stage 1.8 was run and saved rf_2023.npy)
+            # First, check if rf_time_series.npy exists to get the path structure
+            rf_output_dir = 'results/classic_models'
+            # Attempt to load the RF 2023 prediction (assuming it was saved individually, modify if needed)
+            # Let's assume rf_depths were saved in stage1.8 similarly to how s3gm depths are saved
+            # If not, we need to reload sentinel data and run predict_rf for 2023 again
+            # ---- SAFER APPROACH: Load RF results if available ----
+            rf_2023 = None
+            rf_depths_list = []
+            try:
+                 # Load all RF depths if saved as a list/stack
+                 # This depends on how stage1_8 saved its predictions.
+                 # Let's assume it saved depths similar to stage 3
+                 rf_years = range(2018, 2024)
+                 for rf_year in rf_years:
+                    rf_depth_file = os.path.join(rf_output_dir, f'rf_{rf_year}.npy') # Assuming this naming
+                    if os.path.exists(rf_depth_file):
+                       rf_depths_list.append(np.load(rf_depth_file))
+                 if len(rf_depths_list) == len(rf_years):
+                     rf_2023 = rf_depths_list[-1] # Get the 2023 data
+                 else:
+                    logger.warning(f"Could not find all RF annual prediction files in {rf_output_dir}. Trying to load specifically rf_2023.npy if it exists.")
+                    # Fallback: Check if a single file was saved
+                    specific_rf_file = os.path.join(rf_output_dir, 'rf_2023.npy') # Check for this specific name convention
+                    if os.path.exists(specific_rf_file):
+                        rf_2023 = np.load(specific_rf_file)
+
+            except Exception as load_err:
+                 logger.warning(f"Could not load pre-saved RF results for 2023: {load_err}. Skipping difference map.")
+
+            s3gm_2023 = depths[-1] # Get the S3GM 2023 result
+
+            if rf_2023 is not None and s3gm_2023 is not None:
+                logger.info("Calculating S3GM - RF difference map for 2023.")
+                difference_map = s3gm_2023 - rf_2023
+
+                # Apply land mask to the difference map
+                if land_mask_array is not None:
+                    difference_map[land_mask_array == 0] = np.nan # Mask land pixels
+
+                # Determine symmetric color limits
+                max_abs_diff = np.nanmax(np.abs(difference_map))
+                diff_vmin = -max_abs_diff
+                diff_vmax = max_abs_diff
+
+                # Plotting
+                FONTSIZE_MAIN_LABELS = 12 # Match other plots if needed
+                FONTSIZE_MAIN_TICKS = 10
+                fig_diff = plt.figure(figsize=(7, 5.5)) # Match scatter plot aspect ratio
+                ax_diff = fig_diff.add_subplot(1, 1, 1)
+                extent = [122.35, 122.6, 30.62, 30.8] # Same extent as other maps
+
+                im_diff = ax_diff.imshow(difference_map, cmap='coolwarm', vmin=diff_vmin, vmax=diff_vmax, extent=extent, origin='upper', aspect='auto', interpolation='nearest')
+
+                # Apply land mask overlay visualization (optional, but good for context)
+                if land_mask_array is not None:
+                    land_color = [0.5, 0.3, 0.1, 0.9] # Dark brown
+                    water_color = [0, 0, 0, 0] # Transparent
+                    cmap_land = colors.ListedColormap([land_color, water_color])
+                    bounds = [-0.5, 0.5, 1.5]
+                    norm_land = colors.BoundaryNorm(bounds, cmap_land.N)
+                    ax_diff.imshow(land_mask_array, cmap=cmap_land, norm=norm_land, interpolation='nearest', zorder=10, extent=extent, origin='upper', aspect='auto')
+
+                #ax_diff.set_title('Difference: S3GM - RF (2023)', fontsize=FONTSIZE_MAIN_TICKS + 2)
+                ax_diff.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
+                ax_diff.xaxis.set_major_locator(mticker.MultipleLocator(0.1))
+                ax_diff.yaxis.set_major_locator(mticker.MultipleLocator(0.1))
+                ax_diff.xaxis.set_major_formatter(mticker.FuncFormatter(lon_formatter)) # Use formatters defined earlier
+                ax_diff.yaxis.set_major_formatter(mticker.FuncFormatter(lat_formatter))
+
+                # Add colorbar
+                cbar = fig_diff.colorbar(im_diff, ax=ax_diff, orientation='vertical', fraction=0.046, pad=0.04)
+                cbar.set_label('Depth Difference (m)', fontsize=FONTSIZE_MAIN_LABELS)
+                cbar.ax.tick_params(labelsize=FONTSIZE_MAIN_TICKS)
+
+                fig_diff.tight_layout()
+                save_path_diff = os.path.join(output_dir, 's3gm_rf_difference_2023.jpg')
+                plt.savefig(save_path_diff, dpi=600, bbox_inches='tight')
+                logger.info(f"Difference map saved to: {save_path_diff}")
+                plt.close(fig_diff)
+            else:
+                logger.warning("RF or S3GM 2023 results not available. Skipping difference map generation.")
+
+        except Exception as e:
+            logger.error(f"Failed to generate difference map: {str(e)}")
+        # --- End of Difference Map ---
+
     except Exception as e:
         logger.error(f"后处理分析失败: {str(e)}")
         raise
@@ -651,61 +890,47 @@ def load_trained_classic_models():
         raise
 
 def denormalize_bathymetry(normalized_data: np.ndarray, stats: Dict[str, float]) -> np.ndarray:
-    """反标准化水深数据，并强制物理约束
-    
-    Args:
-        normalized_data: 归一化的水深数据
-        stats: 包含统计信息的字典，必须包含 'median', 'iqr' 和可选的 'land_value'
-        
-    Returns:
-        反标准化后的水深数据，确保所有海域深度为非负值
-    """
+    """使用 Min-Max 反标准化水深数据，并强制物理约束"""
     try:
-        # 确保与 preprocessor.py 中使用相同的 scaling_factor
-        scaling_factor = 5.0
-        
-        # 从 stats 中获取 land_value，提供默认值
-        land_value = stats.get('land_value', 1.5)
-        
+        # 从 stats 中获取物理范围和特殊值
+        min_phys = stats.get('min_phys', 0.0)
+        max_phys = stats.get('max_phys', 90.0)
+        land_value_norm = stats.get('land_value', 1.5)
+        eps = 1e-6
+
         # 识别陆地区域 (使用 isclose 以处理浮点误差)
-        land_mask = np.isclose(normalized_data, land_value)
+        land_mask = np.isclose(normalized_data, land_value_norm)
         
         # 检查实际数据范围（用于调试）
         valid_data = normalized_data[~land_mask & ~np.isnan(normalized_data)]
         if len(valid_data) > 0:
             actual_min, actual_max = valid_data.min(), valid_data.max()
             logger.info(f"反标准化前有效数据范围: [{actual_min:.4f}, {actual_max:.4f}]")
+            # 对超出 [-1, 1] 的值发出警告
+            if actual_min < -1.0 - eps or actual_max > 1.0 + eps:
+                 logger.warning(f"  注意: 有效数据范围超出预期的 [-1, 1] 区间！")
         else:
             logger.warning("反标准化前没有找到有效（非陆地/NaN）数据")
 
-        # 执行反标准化计算
-        # 1. 首先创建输出数组的副本以避免修改输入
-        depth_denorm = normalized_data.copy()
-        
-        # 2. 反标准化公式: denorm = (norm / scaling_factor) * iqr + median
-        # 注意：这里明确地写出逆运算过程
-        depth_denorm = (normalized_data / (scaling_factor + 1e-6)) * stats['iqr'] + stats['median']
-        
-        # 3. 处理特殊区域
-        # 将陆地区域设置为0（而不是NaN或其他值）
+        # 执行反标准化计算: phys = ((norm + 1) / 2) * (max_phys - min_phys) + min_phys
+        depth_denorm = ((normalized_data + 1) / 2) * (max_phys - min_phys) + min_phys
+
+        # 处理特殊区域：将陆地区域设为0米（或根据需要设为NaN）
         depth_denorm = np.where(land_mask, 0.0, depth_denorm)
         
-        # 4. 强制物理约束：水深必须非负
-        # 仅对非陆地区域应用约束
+        # 强制物理约束：水深必须非负 (理论上 Min-Max 不会产生负值，除非原始数据或操作有问题)
         sea_mask = ~land_mask
         if np.any(depth_denorm[sea_mask] < 0):
             neg_count = np.sum(depth_denorm[sea_mask] < 0)
             total_count = np.sum(sea_mask)
-            logger.warning(f"检测到负水深值，占海域像素的 {(neg_count/total_count)*100:.2f}%")
+            logger.warning(f"检测到负水深值，占海域像素的 {(neg_count/total_count)*100:.2f}% (理论上不应发生)")
             logger.warning(f"负值范围: [{depth_denorm[sea_mask & (depth_denorm < 0)].min():.2f}, 0) 米")
-            
-            # 将负水深强制设置为0
             depth_denorm[sea_mask] = np.maximum(depth_denorm[sea_mask], 0.0)
         
-        # 5. 处理可能的 NaN 值
-        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0)
+        # 处理可能的 NaN 值 (例如，如果输入本身包含NaN)
+        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0) # 将NaN也设为0米
         
-        # 6. 最终检查和日志
+        # 最终检查和日志
         if np.any(sea_mask):
             sea_depths = depth_denorm[sea_mask]
             logger.info(f"反标准化后深度范围 (海域): [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")

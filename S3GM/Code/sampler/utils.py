@@ -11,6 +11,7 @@ import random
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import logging
+import math # Add import at the top
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ class LangevinCorrector(Corrector):
       snr_ratio_sq_val = snr_ratio_sq.mean().item()
 
       step_size_clamp_max = 0.1 # Tunable parameter
-      step_size = torch.clamp(step_size, min=1e-8, max=step_size_clamp_max)
+      # step_size = torch.clamp(step_size, min=1e-8, max=step_size_clamp_max) # <-- 注释掉此行
       step_size_clamped_val = step_size.mean().item()
 
       # --- Conditional Logging ---
@@ -295,8 +296,7 @@ class LangevinCorrector(Corrector):
           logger.log(log_level, f"  Corrector Step {i} (t={current_t:.4f}, approx_main_step={main_i_approx}):")
           logger.log(log_level, f"    grad_norm={grad_norm_val:.4e}, noise_norm={noise_norm_val:.4e}")
           logger.log(log_level, f"    snr_ratio_sq={snr_ratio_sq_val:.4e}, alpha={alpha.mean().item():.4e}")
-          logger.log(log_level, f"    step_size_unclamped={step_size_val:.4e}")
-          logger.log(log_level, f"    step_size_clamped={step_size_clamped_val:.4e} (max={step_size_clamp_max})")
+          logger.log(log_level, f"    step_size={step_size_clamped_val:.4e}")
       # ---------------------------
 
       step_size_sqrt_term = torch.sqrt(step_size * 2)
@@ -545,16 +545,75 @@ def pc_sampler_video_ar(config, net, sde, predictor, corrector, shape, snr, x0=N
                     # x_u = x
                 # dps loss
                 _, std = sde.marginal_prob(x, t)
-                x0_hat = std**2*score + inp
-                loss_dps = ((y-transform(x0_hat))**2).sum()
-                loss = alpha * loss_dps
+                x0_hat = rearrange(std[:, None, None, None, None] ** 2 * score + inp, '(b n) t c h w -> b n t c h w', n=b)     # batch*b*nf*(c+npara)*h
+                x0_hat_temp = x_to_sample(x0_hat)
+                if save_sample_path:
+                    x0_hats.append(x0_hat.detach().cpu().numpy())
+
+                var = std_y**2 + gamma * std**2 if std_y is not None else 1.
+                loss_dps = torch.sum(((y - transform(x0_hat_temp)) ** 2 / var).reshape(x0_hat.shape[0], -1), dim=-1)  # /scalar.sqrt()  *std[None, :, None, None]
+                loss_dps = torch.sum(loss_dps, dim=0)  # /loss_dps.detach().mean().sqrt()
+                if std_y is not None:
+                    loss_dps = loss_dps/2.
+                # loss_dps = loss_dps/loss_dps.detach().sqrt()    # normalize
+
+                if b == 1:
+                    # 当b=1时，使用时间步内的连续性损失
+                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]  # 当前帧
+                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]     # 下一帧
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)  # 计算相邻帧之间的差异
+                else:
+                    # 原有的计算方式
+                    loss_consis = torch.sum(((x0_hat[:, :-1, (nf-ol):nf, :ncomp].detach()-x0_hat[:, 1:, :ol, :ncomp])**2).reshape(x0_hat.shape[0], x0_hat.shape[1]-1, -1), dim=-1)
+                
+                loss_consis = torch.sum(loss_consis)  # 对所有批次求和
+                
+                # loss_consis_para的计算也需要修改
+                if b == 1:
+                    # 对于参数部分的连续性损失
+                    loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - x0_hat[:, 0, :1, ncomp:].detach())**2)
+                else:
+                    # 原有的计算方式
+                    loss_consis_para = torch.sum(((x0_hat[:, 1:, :, ncomp:]-x0_hat[:, 0:1, :, ncomp:].detach())**2).reshape(x0_hat.shape[0], -1), dim=-1)
+                
+                loss_consis_para = torch.sum(loss_consis_para, dim=0)
+
+                if beta is not None:
+                    loss_eq, _ = kse_residual(inp, nf, 0.5, data_scalar)       # x0_hat_temp, ns_real
+                    # scalar2 = scalar2.detach()
+                    loss_eq = loss_eq/loss_eq.detach().sqrt()
+                    loss = alpha * loss_dps + beta(t) * loss_eq + gamma1 * loss_consis + gamma2 * loss_consis_para  # /loss_dps.detach().sqrt()  /scalar2.mean().sqrt()
+                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss eq: {beta(t) * loss_eq.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
+                    losses['loss'].append(loss.item())
+                    losses['loss_eq'].append(loss_eq.item())
+                    losses['loss_dps'].append(loss_dps.item())
+                    losses['loss_consis'].append(loss_consis.item())
+                    losses['loss_consis_para'].append(loss_consis_para.item())
+                    assert (not torch.isnan(loss_eq))
+                else:
+                    loss = alpha * loss_dps + gamma1 * loss_consis + gamma2 * loss_consis_para
+                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
+                    losses['loss'].append(loss.item())
+                    losses['loss_dps'].append(loss_dps.item())
+                    losses['loss_consis'].append(loss_consis.item())
+                    losses['loss_consis_para'].append(loss_consis_para.item())
                 dx = torch.autograd.grad(loss, inp)[0]
                 dx = torch.clamp(dx, min=-1e8, max=1e8)
-                x = x_u - dx       # /torch.sqrt(scalar1.mean())
-                # x = x_u
-            x = x.detach()
-        pred.append(x_mean if i_b==0 else x_mean[:, ol:])
-    return torch.cat(pred, dim=1).detach().cpu().numpy() if denoise else x, x_generated
+                temp = temp_u - dx     # (batch*b)*(nf*c+npara)*h*w
+            #     # x = x_u
+            temp = temp.detach()
+
+            x = rearrange(temp, '(b n) t c h w -> b n t c h w', n=b)
+            x_mean = rearrange(temp_mean, '(b n) t c h w -> b n t c h w', n=b)
+            if save_sample_path:
+                x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
+            tqdm_setting.update(1)
+
+            # 在关键计算后添加监控
+            if i % 25 == 0:
+                monitor_data_range(x, f"第{i}步")
+
+    return x_to_sample(x_mean).detach().cpu().numpy(), x0_hats if save_sample_path else None, losses
 
 
 def pc_sampler_video1d_ar(config, net, sde, predictor, corrector, shape, snr, x0=None, n_steps=1, probability_flow=False, alpha=1.,
@@ -611,21 +670,93 @@ def pc_sampler_video1d_ar(config, net, sde, predictor, corrector, shape, snr, x0
                     # x_u = x
                 # dps loss
                 _, std = sde.marginal_prob(x, t)
-                x0_hat = std**2*score + inp
-                loss_dps = ((y-transform(x0_hat))**2).sum()
-                loss = alpha * loss_dps
+                x0_hat = rearrange(std[:, None, None, None, None] ** 2 * score + inp, '(b n) t c h w -> b n t c h w', n=b)     # batch*b*nf*(c+npara)*h
+                x0_hat_temp = x_to_sample(x0_hat)
+                if save_sample_path:
+                    x0_hats.append(x0_hat.detach().cpu().numpy())
+
+                var = std_y**2 + gamma * std**2 if std_y is not None else 1.
+                loss_dps = torch.sum(((y - transform(x0_hat_temp)) ** 2 / var).reshape(x0_hat.shape[0], -1), dim=-1)  # /scalar.sqrt()  *std[None, :, None, None]
+                loss_dps = torch.sum(loss_dps, dim=0)  # /loss_dps.detach().mean().sqrt()
+                if std_y is not None:
+                    loss_dps = loss_dps/2.
+                # loss_dps = loss_dps/loss_dps.detach().sqrt()    # normalize
+
+                if b == 1:
+                    # 当b=1时，使用时间步内的连续性损失
+                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]  # 当前帧
+                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]     # 下一帧
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)  # 计算相邻帧之间的差异
+                else:
+                    # 原有的计算方式
+                    loss_consis = torch.sum(((x0_hat[:, :-1, (nf-ol):nf, :ncomp].detach()-x0_hat[:, 1:, :ol, :ncomp])**2).reshape(x0_hat.shape[0], x0_hat.shape[1]-1, -1), dim=-1)
+                
+                loss_consis = torch.sum(loss_consis)  # 对所有批次求和
+                
+                # loss_consis_para的计算也需要修改
+                if b == 1:
+                    # 对于参数部分的连续性损失
+                    loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - x0_hat[:, 0, :1, ncomp:].detach())**2)
+                else:
+                    # 原有的计算方式
+                    loss_consis_para = torch.sum(((x0_hat[:, 1:, :, ncomp:]-x0_hat[:, 0:1, :, ncomp:].detach())**2).reshape(x0_hat.shape[0], -1), dim=-1)
+                
+                loss_consis_para = torch.sum(loss_consis_para, dim=0)
+
+                if beta is not None:
+                    loss_eq, _ = kse_residual(inp, nf, 0.5, data_scalar)       # x0_hat_temp, ns_real
+                    # scalar2 = scalar2.detach()
+                    loss_eq = loss_eq/loss_eq.detach().sqrt()
+                    loss = alpha * loss_dps + beta(t) * loss_eq + gamma1 * loss_consis + gamma2 * loss_consis_para  # /loss_dps.detach().sqrt()  /scalar2.mean().sqrt()
+                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss eq: {beta(t) * loss_eq.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
+                    losses['loss'].append(loss.item())
+                    losses['loss_eq'].append(loss_eq.item())
+                    losses['loss_dps'].append(loss_dps.item())
+                    losses['loss_consis'].append(loss_consis.item())
+                    losses['loss_consis_para'].append(loss_consis_para.item())
+                    assert (not torch.isnan(loss_eq))
+                else:
+                    loss = alpha * loss_dps + gamma1 * loss_consis + gamma2 * loss_consis_para
+                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
+                    losses['loss'].append(loss.item())
+                    losses['loss_dps'].append(loss_dps.item())
+                    losses['loss_consis'].append(loss_consis.item())
+                    losses['loss_consis_para'].append(loss_consis_para.item())
                 dx = torch.autograd.grad(loss, inp)[0]
                 dx = torch.clamp(dx, min=-1e8, max=1e8)
-                x = x_u - dx       # /torch.sqrt(scalar1.mean())
-                # x = x_u
-            x = x.detach()
-        pred.append(x_mean if i_b==0 else x_mean[:, ol:])
-    return torch.cat(pred, dim=1).detach().cpu().numpy() if denoise else x, x_generated
+                temp = temp_u - dx     # (batch*b)*(nf*c+npara)*h*w
+            #     # x = x_u
+            temp = temp.detach()
+
+            x = rearrange(temp, '(b n) t c h w -> b n t c h w', n=b)
+            x_mean = rearrange(temp_mean, '(b n) t c h w -> b n t c h w', n=b)
+            if save_sample_path:
+                x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
+            tqdm_setting.update(1)
+
+            # 在关键计算后添加监控
+            if i % 25 == 0:
+                monitor_data_range(x, f"第{i}步")
+
+    return x_to_sample(x_mean).detach().cpu().numpy(), x0_hats if save_sample_path else None, losses
 
 
-def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, alpha=1., beta=1., gamma1=100., gamma2=100, snr=0.128, std_y=None, gamma=1.e-2,
-                         device='cpu', dtype='float32', eps=1e-3, save_sample_path=False,
-                         probability_flow=False, continuous=True, data_scalar=None):
+def complete_video_pc_dps(config, net, sde, y, transform, corrector,
+                         n_steps=5,
+                         alpha=3.,     # 平衡DPS权重 (将忽略此固定值)
+                         beta=1.,
+                         gamma1=15.,   # 进一步降低时序一致性 (将忽略此固定值)
+                         gamma2=15,    # 进一步降低参数一致性 (将忽略此固定值)
+                         snr=0.128,
+                         std_y=None,
+                         gamma=1.e-2,
+                         device='cpu',
+                         dtype='float32',
+                         eps=1e-3,
+                         save_sample_path=False,
+                         probability_flow=False,
+                         continuous=True,
+                         data_scalar=None):
     dtype_torch = getattr(torch, dtype)
     corrector_update_fn = functools.partial(shared_corrector_update_fn,
                                             sde=sde,
@@ -718,6 +849,13 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
     x_generated = [x_unknown.detach().cpu().numpy()]
     x0_hats = []
 
+    # --- 定义指导权重的最大值 ---
+    alpha_max = 1.0
+    gamma1_max = 10.0 # 从 100.0 降低
+    gamma2_max = 10.0 # 从 100.0 降低
+    gamma_spatial_max = 1.0 # --- 新增空间平滑权重 ---
+    # ---------------------------    
+
     # --- 添加辅助函数用于打印范围和标准差 ---
     def print_stats(tensor, name):
         if tensor is None or not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
@@ -748,6 +886,17 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
         for i in pbar:
             t = timesteps[i]
             vec_t = torch.ones(shape[0]*b, device=t.device).float() * t
+
+            # --- 计算常量指导权重 ---
+            alpha_eff = config.sampling.get('alpha', 0.85)
+            gamma1_eff = config.sampling.get('gamma1', 10.0)
+            gamma2_eff = config.sampling.get('gamma2', 10.0)
+            gamma_spatial_eff = config.sampling.get('gamma_spatial', 1.0)
+            # --- 记录权重 (只在特定步骤打印) ---
+            if i == 0 or i == 25 or i == sde.N - 1:
+                t_val = t.item() # 获取当前时间的标量值
+                logger.info(f" Guidance Weights (t={t_val:.4f}, CONSTANT): alpha_t={alpha_eff:.4e}, gamma1_t={gamma1_eff:.4e}, gamma2_t={gamma2_eff:.4e}, gamma_spatial_t={gamma_spatial_eff:.4e}")
+            # -----------------------------------------    
 
             # --- 调试日志: 循环开始 ---
             if i == 0 or i == 25 or i == sde.N -1 : # 只在特定步骤打印详细信息
@@ -811,6 +960,7 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
             # -------------------------
 
             stability_eps = 1e-8
+            score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range']) # Clamp model output
 
             if isinstance(sde, VPSDE):
                 # --- 修正 VPSDE x0_hat 计算 ---
@@ -833,39 +983,45 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
 
                 # 使用 clamp 限制 score 范围
                 score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range'])
-                # 计算 x0_hat
-                x0_hat_calc = (inp - sqrt_1m_alpha_t_exp * score_clamp) / sqrt_alpha_t_exp
 
-                # --- Adjustment: Widen x0_hat clamp range ---
-                # 如果启用了 x0_hat clamp (现在放宽范围)
-                if config.stability.get('x0_hat_clamp', True):
-                     # 将范围从 [-10, 10] 调整为 [-20, 20]
-                     x0_hat_calc = torch.clamp(x0_hat_calc, -20.0, 20.0) 
-                # --- End Adjustment ---
-
-                x0_hat = rearrange(x0_hat_calc, '(b n) t c h w -> b n t c h w', n=b)
-            else: # VESDE 或其他
-                std_exp = std[:, None, None, None, None] if len(inp.shape) == 5 else std[:, None, None, None]
-                score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range'])
-                x0_hat_calc = std_exp ** 2 * score_clamp + inp
+                # 根据参数化方式计算 x0_hat
+                if config.parameterization == 'v':
+                    # v-parameterization: x0_hat = alpha_t * x_t - sigma_t * v
+                    x0_hat_calc = sqrt_alpha_t_exp * inp - sqrt_1m_alpha_t_exp * score_clamp # score_clamp holds 'v'
+                    if i == 0: logger.info("Using v-parameterization formula for x0_hat in DPS") # Log once
+                else: # Assume epsilon parameterization
+                    # epsilon-parameterization: x0_hat = (x_t - sigma_t * epsilon) / alpha_t
+                    x0_hat_calc = (inp - sqrt_1m_alpha_t_exp * score_clamp) / sqrt_alpha_t_exp # score_clamp holds 'epsilon'
+                    if i == 0: logger.info("Using epsilon-parameterization formula for x0_hat in DPS") # Log once
                 
-                # --- Adjustment: Widen x0_hat clamp range ---
-                # 如果启用了 x0_hat clamp (现在放宽范围)
-                if config.stability.get('x0_hat_clamp', True):
-                     # 将范围从 [-10, 10] 调整为 [-20, 20]
-                     x0_hat_calc = torch.clamp(x0_hat_calc, -20.0, 20.0) 
-                # --- End Adjustment ---
-                     
+                # <<< START Step 2 Debugging Code >>>
+                if i == 0:
+                    numerator = inp - sqrt_1m_alpha_t_exp * score_clamp
+                    denominator = sqrt_alpha_t_exp
+                    print("\n--- Step 0 x0_hat Calculation Analysis (VPSDE) ---")
+                    print_stats(numerator, "Numerator (inp - std * score)")
+                    print_stats(denominator, "Denominator (sqrt_alpha_t)")
+                # <<< END Step 2 Debugging Code >>>
+
+                # 计算 x0_hat (应用裁剪)
                 x0_hat = rearrange(x0_hat_calc, '(b n) t c h w -> b n t c h w', n=b)
 
-            # --- 调试日志: x0_hat ---
-            if i == 0 or i == 25 or i == sde.N -1:
-                print_stats(x0_hat, "x0_hat (估算)")
-            # ------------------------
+                # --- 取消裁剪 --- (保持注释掉)
+                # if config.stability.get('x0_hat_clamp', True):
+                #      x0_hat_calc = torch.clamp(x0_hat_calc, -20.0, 20.0)
+                # ---------------
 
-            if torch.isnan(x0_hat).any() or torch.isinf(x0_hat).any():
-                print(f"警告: 步骤 {i}, x0_hat 计算产生了 NaN 或 Inf 值。替换为0。")
-                x0_hat = torch.nan_to_num(x0_hat, nan=0.0, posinf=5.0, neginf=-5.0)
+            else: # VESDE 或其他 (保持原始逻辑，因为我们主要用 VPSDE)
+                 # ... (原始 VESDE x0_hat 计算逻辑保持不变) ...
+                 # 注意：如果以后使用 VESDE + v-param，这里也需要修改
+                 std_exp = std[:, None, None, None, None] if len(inp.shape) == 5 else std[:, None, None, None]
+                 x0_hat_calc = std_exp ** 2 * score_clamp + inp
+                 x0_hat = rearrange(x0_hat_calc, '(b n) t c h w -> b n t c h w', n=b)
+                 if i == 0: logger.warning("Using original VESDE formula for x0_hat in DPS (v-param not explicitly handled here)") # Log once
+
+            # --- 调试日志: x0_hat (最终计算后) ---
+            if i == 0 or i == 25 or i == sde.N -1:
+               print_stats(x0_hat, "x0_hat (DPS 使用)") # New log label
 
             x0_hat_temp = x_to_sample(x0_hat)
             if save_sample_path:
@@ -882,8 +1038,11 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
                 var_exp = var[:, None, None, None, None] if len(y.shape) == 5 else var[:, None, None, None]
             # 添加 epsilon 防止除零
             var_safe = var_exp + stability_eps
-            # 计算损失项
-            loss_dps_term = (y - transform(x0_hat_temp)) ** 2 / var_safe
+            # 计算损失项 (L2)
+            # loss_dps_term = (y - transform(x0_hat_temp)) ** 2 / var_safe
+            # --- 修改为 L1 损失 ---
+            loss_dps_term = torch.abs(y - transform(x0_hat_temp)) / torch.sqrt(var_safe + stability_eps) # 使用 sqrt(var + eps)
+            # -----------------------
             # 检查损失项中的 NaN/Inf
             if torch.isnan(loss_dps_term).any() or torch.isinf(loss_dps_term).any():
                  print(f"警告: 步骤 {i}, loss_dps_term 包含 NaN/Inf。替换为0。")
@@ -919,6 +1078,25 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
                  print(f"  loss_consis_para: {loss_consis_para.item():.4e}")
             # -----------------------------------------------
 
+            # --- 计算空间平滑损失 (L1 of first-order difference) ---
+            # 假设深度通道索引在 config 文件中定义为 depth_channel (例如 = 2)
+            depth_channel_idx = getattr(config, 'depth_channel', 2) # 获取深度通道索引，默认为 2
+            if x0_hat_temp.shape[2] > depth_channel_idx: # 确保索引有效
+                depth_channel = x0_hat_temp[:, :, depth_channel_idx:depth_channel_idx+1] # [B, T, 1, H, W]
+                # 计算水平方向差分
+                diff_h = torch.abs(depth_channel[:, :, :, :, :-1] - depth_channel[:, :, :, :, 1:])
+                # 计算垂直方向差分
+                diff_v = torch.abs(depth_channel[:, :, :, :-1, :] - depth_channel[:, :, :, 1:, :])
+                # 计算总的 L1 损失
+                loss_spatial = torch.sum(diff_h) + torch.sum(diff_v)
+            else:
+                print(f"警告: 步骤 {i}, 深度通道索引 {depth_channel_idx} 无效 (x0_hat_temp 通道数: {x0_hat_temp.shape[2]}). loss_spatial 设为 0。")
+                loss_spatial = torch.tensor(0.0, device=device)
+            # --- 调试日志: loss_spatial ---
+            if i == 0 or i == 25 or i == sde.N -1:
+                 print(f"  loss_spatial: {loss_spatial.item():.4e}")
+            # ----------------------------
+
             loss_eq = torch.tensor(0.0, device=device) # 默认值
             if config.physics_guide:
                 # loss_eq, scalar2 = voriticity_residual(x0_hat, ns_real, 1., data_scalar) # 这部分可能需要调整
@@ -928,12 +1106,24 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
                 pass # 暂时跳过物理引导损失
 
             # 归一化损失值，防止过大
-            loss_dps_norm = loss_dps / (loss_dps.detach().abs().mean() + 1.0)
-            loss_consis_norm = loss_consis / (loss_consis.detach().abs().mean() + 1.0)
-            loss_consis_para_norm = loss_consis_para / (loss_consis_para.detach().abs().mean() + 1.0)
+            # loss_scale = loss_dps.detach().abs().mean() + 1.0  # 使用 DPS 损失作为基准尺度 # <- 注释掉
+            # loss_dps_norm = loss_dps / loss_scale # <- 注释掉
+            # loss_consis_norm = loss_consis / loss_scale  # 使用相同的尺度 # <- 注释掉
+            # loss_consis_para_norm = loss_consis_para / loss_scale  # 使用相同的尺度 # <- 注释掉
+            # loss_spatial_norm = loss_spatial / loss_scale # --- 归一化空间损失 --- # <- 注释掉
 
-            # 使用归一化后的损失
-            loss = alpha * loss_dps_norm + gamma1 * loss_consis_norm + gamma2 * loss_consis_para_norm
+            # 使用归一化后的损失和随时间变化的权重
+            # loss = (alpha_eff * loss_dps_norm + # <- 修改
+            #         gamma1_eff * loss_consis_norm + # <- 修改
+            #         gamma2_eff * loss_consis_para_norm + # <- 修改
+            #         gamma_spatial_eff * loss_spatial_norm) # <-- 加入空间损失 # <- 修改
+
+            # --- 直接使用原始损失项和权重 ---
+            loss = (alpha_eff * loss_dps +
+                    gamma1_eff * loss_consis +
+                    gamma2_eff * loss_consis_para +
+                    gamma_spatial_eff * loss_spatial)
+            # --------------------------------
 
             # --- 调试日志: total loss ---
             if i == 0 or i == 25 or i == sde.N -1:
@@ -978,6 +1168,9 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector, n_steps=5, 
     # --- 在函数末尾添加最终结果的监控 ---
     final_result = x_to_sample(x_mean).detach().cpu().numpy()
     print("\n--- 采样完成 ---")
+    # *** 新增日志: 记录采样循环结束时的 x_mean 范围 ***
+    print_stats(x_mean, "采样结束 x_mean (转换前)")
+    # ******************************************
     print_stats(torch.from_numpy(final_result), "最终结果 x_mean (转换后)")
 
     return final_result, x_generated if save_sample_path else None
@@ -1052,67 +1245,77 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                     rev_G = torch.zeros_like(G) if probability_flow else G
                     temp_mean = temp - rev_f
                     temp_u = temp_mean + rev_G[:, None, None, None] * zb
-                # dps loss
+                
+                # 计算x0_hat
                 _, std = sde.marginal_prob(xb, vec_t)
-                if isinstance(sde, VPSDE):
-                    x0_hat = rearrange(std[:, None, None, None] ** 2 * score + inp, '(b n) t c h -> b n t c h', n=b)     # batch*b*nf*(c+npara)*h
-                else:
-                    alpha_sqrt_ = (1-std**2).sqrt()[:, None, None, None]
-                    x0_hat = rearrange((std[:, None, None, None] ** 2 * score + inp)/alpha_sqrt_, '(b n) t c h -> b n t c h', n=b)     # batch*b*nf*(c+npara)*h
+                x0_hat = rearrange(std[:, None, None, None, None] ** 2 * score + inp, 
+                                  '(b n) t c h w -> b n t c h w', n=b)
+                
+                # 获取观测掩码（假设在第4个通道）
+                obs_mask = x0_hat[:, :, :, 3:4]  # [B, N, T, 1, H, W]
+                
+                # 转换x0_hat并记录范围（每50步记录一次）
+                if i % 50 == 0:
+                    x0_hat_before = x0_hat[:, :, :, 2:3][obs_mask[:, :, :, 0] > 0.5]  # 只看深度通道
+                    transformed = transform(x0_hat)
+                    x0_hat_after = transformed[:, :, :, 2:3][obs_mask[:, :, :, 0] > 0.5]
+                    
+                    logger.info(f"\nStep {i}, t={t.item():.4f}:")
+                    logger.info(f"x0_hat range at obs points (before transform): "
+                               f"[{x0_hat_before.min().item():.4f}, {x0_hat_before.max().item():.4f}]")
+                    logger.info(f"x0_hat range at obs points (after transform): "
+                               f"[{x0_hat_after.min().item():.4f}, {x0_hat_after.max().item():.4f}]")
+                
+                # 计算masked DPS损失
                 x0_hat_temp = x_to_sample(x0_hat)
-                if save_sample_path:
-                    x0_hats.append(x0_hat.detach().cpu().numpy())
-
-                var = std_y**2 + gamma * std**2 if std_y is not None else 1.
-                loss_dps = torch.sum(((y - transform(x0_hat_temp)) ** 2 / var).reshape(x0_hat.shape[0], -1), dim=-1)  # /scalar.sqrt()  *std[None, :, None, None]
-                loss_dps = torch.sum(loss_dps, dim=0)  # /loss_dps.detach().mean().sqrt()
-                if std_y is not None:
-                    loss_dps = loss_dps/2.
-                # loss_dps = loss_dps/loss_dps.detach().sqrt()    # normalize
-
+                obs_mask = y[:, :, 3:4] > 0.5
+                valid_mask = (y != 1.5) & (transform(y) != 1.5)  # 排除陆地/无效区域
+                combined_mask = valid_mask & obs_mask
+                
+                # 分别计算观测点和非观测点的损失
+                loss_dps_obs = ((y - transform(x0_hat_temp))[combined_mask] ** 2).sum()
+                loss_dps_rest = ((y - transform(x0_hat_temp))[valid_mask & ~obs_mask] ** 2).sum() * 0.1  # 降低非观测点权重
+                
+                # 合并损失
+                loss_dps = loss_dps_obs + loss_dps_rest
+                
+                # 计算一致性损失（使用有效区域的掩码）
                 if b == 1:
-                    # 当b=1时，使用时间步内的连续性损失
-                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]  # 当前帧
-                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]     # 下一帧
-                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)  # 计算相邻帧之间的差异
+                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]
+                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2 * valid_mask[..., :(nf-1), :])
                 else:
-                    # 原有的计算方式
-                    loss_consis = torch.sum(((x0_hat[:, :-1, (nf-ol):nf, :ncomp].detach()-x0_hat[:, 1:, :ol, :ncomp])**2).reshape(x0_hat.shape[0], x0_hat.shape[1]-1, -1), dim=-1)
+                    x0_curr = x0_hat[:, :-1, (nf-ol):nf, :ncomp]
+                    x0_next = x0_hat[:, 1:, :ol, :ncomp]
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2 * valid_mask[:, :-1, (nf-ol):nf])
                 
-                loss_consis = torch.sum(loss_consis)  # 对所有批次求和
-                
-                # loss_consis_para的计算也需要修改
+                # 参数一致性损失
                 if b == 1:
-                    # 对于参数部分的连续性损失
-                    loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - x0_hat[:, 0, :1, ncomp:].detach())**2)
+                    loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - 
+                                                x0_hat[:, 0, :1, ncomp:].detach())**2)
                 else:
-                    # 原有的计算方式
-                    loss_consis_para = torch.sum(((x0_hat[:, 1:, :, ncomp:]-x0_hat[:, 0:1, :, ncomp:].detach())**2).reshape(x0_hat.shape[0], -1), dim=-1)
+                    loss_consis_para = torch.sum((x0_hat[:, 1:, :, ncomp:] - 
+                                                x0_hat[:, 0:1, :, ncomp:].detach())**2)
                 
-                loss_consis_para = torch.sum(loss_consis_para, dim=0)
-
-                if beta is not None:
-                    loss_eq, _ = kse_residual(inp, nf, 0.5, data_scalar)       # x0_hat_temp, ns_real
-                    # scalar2 = scalar2.detach()
-                    loss_eq = loss_eq/loss_eq.detach().sqrt()
-                    loss = alpha * loss_dps + beta(t) * loss_eq + gamma1 * loss_consis + gamma2 * loss_consis_para  # /loss_dps.detach().sqrt()  /scalar2.mean().sqrt()
-                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss eq: {beta(t) * loss_eq.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
-                    losses['loss'].append(loss.item())
-                    losses['loss_eq'].append(loss_eq.item())
-                    losses['loss_dps'].append(loss_dps.item())
-                    losses['loss_consis'].append(loss_consis.item())
-                    losses['loss_consis_para'].append(loss_consis_para.item())
-                    assert (not torch.isnan(loss_eq))
-                else:
-                    loss = alpha * loss_dps + gamma1 * loss_consis + gamma2 * loss_consis_para
-                    tqdm_setting.set_description(f'loss total: {loss.item():.5e} | loss dps: {alpha * loss_dps.item():.5e} | loss consis: {gamma1 * loss_consis.item():.5e}')
-                    losses['loss'].append(loss.item())
-                    losses['loss_dps'].append(loss_dps.item())
-                    losses['loss_consis'].append(loss_consis.item())
-                    losses['loss_consis_para'].append(loss_consis_para.item())
+                # 总损失
+                loss = (alpha * loss_dps + 
+                        gamma1 * loss_consis + 
+                        gamma2 * loss_consis_para)
+                
+                # 计算并应用梯度
                 dx = torch.autograd.grad(loss, inp)[0]
-                dx = torch.clamp(dx, min=-1e8, max=1e8)
-                temp = temp_u - dx     # (batch*b)*(nf*c+npara)*h*w
+                
+                # 使用更保守的梯度裁剪
+                dx = torch.clamp(dx, min=-1.0, max=1.0)
+                
+                # 每50步记录梯度信息
+                if i % 50 == 0:
+                    logger.info(f"Gradient stats:")
+                    logger.info(f"- dx range: [{dx.min().item():.4e}, {dx.max().item():.4e}]")
+                    logger.info(f"- dx mean: {dx.mean().item():.4e}")
+                    logger.info(f"- dx std: {dx.std().item():.4e}")
+                
+                temp = temp_u - dx
             #     # x = x_u
             temp = temp.detach()
 

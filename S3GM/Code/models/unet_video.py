@@ -235,56 +235,91 @@ class FactorizedAttentionBlock(nn.Module):
         )
 
     def forward(self, x, attn_mask, temb, T, frame_indices=None, attn_weights_list=None):
+        # --- Prepare temporal attention mask ---
+        # Input attn_mask has shape like [B, T, 1, H, W] or [B, T, 1, H]
+        # We need a mask of shape [B, T] for temporal attention.
+        # Reduce spatial dimensions: check if *any* spatial location is active (value > 0)
+        if attn_mask is not None:
+            # Determine the batch size B based on the input x shape and T
+            if len(x.shape) == 4: # Input to FactorizedAttentionBlock is [BT, C, H, W]
+                BT = x.shape[0]
+                B = BT // T if T > 0 else 1
+            elif len(x.shape) == 3: # Input is [BT, C, H]
+                BT = x.shape[0]
+                B = BT // T if T > 0 else 1
+            else: # Fallback or error
+                B = attn_mask.shape[0]
+
+            # Check if attn_mask shape is [B, T, ...]
+            if attn_mask.shape[0] == B and attn_mask.shape[1] == T:
+                 temporal_attn_mask = attn_mask.view(B, T, -1).any(dim=-1) # Shape [B, T]
+                 # Ensure the mask is boolean or float for multiplication later
+                 temporal_attn_mask = temporal_attn_mask.float()
+            else:
+                 # Handle cases where attn_mask might already be reshaped or incorrect
+                 print(f"Warning: Unexpected attn_mask shape {attn_mask.shape} in FactorizedAttentionBlock. Expected first two dims: ({B}, {T}). Using default mask.")
+                 temporal_attn_mask = th.ones(B, T, device=x.device, dtype=th.float32) # Default to allow all interactions
+
+        else:
+            # If no mask provided, assume all time steps are valid
+            if len(x.shape) == 4: BT = x.shape[0]; B = BT // T if T > 0 else 1
+            elif len(x.shape) == 3: BT = x.shape[0]; B = BT // T if T > 0 else 1
+            else: B = 1 # Fallback
+            temporal_attn_mask = th.ones(B, T, device=x.device, dtype=th.float32)
+
+
         if len(x.shape) == 4:
             BT, C, H, W = x.shape
-            B = BT//T
-            
+            B = BT//T if T > 0 else 1 # Recalculate B safely
+
             x = x + self.range_adjust(x)
-            
+
             x = x.view(B, T, C, H, W).permute(0, 3, 4, 2, 1)  # B, H, W, C, T
             x = x.reshape(B, H*W, C, T)
-            
+
+            # --- Pass the correctly shaped mask to temporal_attention ---
             x = self.temporal_attention(x,
                                         temb,
                                         frame_indices,
-                                        attn_mask=attn_mask.flatten(start_dim=2).squeeze(dim=2), # B x T
+                                        attn_mask=temporal_attn_mask, # Shape [B, T]
                                         attn_weights_list=None if attn_weights_list is None else attn_weights_list['temporal'],)
 
             x = x.view(B, H, W, C, T).permute(0, 4, 3, 1, 2)  # B, T, C, H, W
             x = x.reshape(B, T, C, H*W)
-            
+
             x = self.spatial_attention(x,
                                     temb,
                                     frame_indices=None,
                                     attn_weights_list=None if attn_weights_list is None else attn_weights_list['spatial'])
-            
+
             x = x.reshape(BT, C, H, W)
-            
+
         elif len(x.shape) == 3:
             BT, C, H = x.shape
-            B = BT//T
-            
+            B = BT//T if T > 0 else 1 # Recalculate B safely
+
             x = x + self.range_adjust(x.unsqueeze(-1)).squeeze(-1)
-            
+
             x = x.view(B, T, C, H).permute(0, 3, 2, 1)  # B, H, C, T
             x = x.reshape(B, H, C, T)
-            
+
+            # --- Pass the correctly shaped mask to temporal_attention ---
             x = self.temporal_attention(x,
                                         temb,
                                         frame_indices,
-                                        attn_mask=attn_mask.flatten(start_dim=2).squeeze(dim=2), # B x T
+                                        attn_mask=temporal_attn_mask, # Shape [B, T]
                                         attn_weights_list=None if attn_weights_list is None else attn_weights_list['temporal'],)
 
             x = x.view(B, H, C, T).permute(0, 3, 2, 1)  # B, T, C, H
             x = x.reshape(B, T, C, H)
-            
+
             x = self.spatial_attention(x,
                                     temb,
                                     frame_indices=None,
                                     attn_weights_list=None if attn_weights_list is None else attn_weights_list['spatial'])
-            
+
             x = x.reshape(BT, C, H)
-            
+
         return x
 
 
@@ -328,6 +363,8 @@ class UNetVideoModel(nn.Module):
         use_rpe_net=False,
         use_mixed_activation=True,
         land_value=1.5,
+        init_scale=0.4,
+        init_shift=0.1
     ):
         super().__init__()
 
@@ -349,7 +386,13 @@ class UNetVideoModel(nn.Module):
         self.use_mixed_activation = use_mixed_activation
         self.land_value = land_value
 
-        self.input_adapter = InputRangeAdapter(in_channels, in_channels, land_value=land_value)
+        self.input_adapter = InputRangeAdapter(
+            in_channels,
+            in_channels,
+            land_value=land_value,
+            init_scale=init_scale,
+            init_shift=init_shift
+        )
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -465,6 +508,13 @@ class UNetVideoModel(nn.Module):
             zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
         )
 
+        # 添加条件引导层
+        self.condition_guide = nn.Sequential(
+            conv_nd(dims, self.in_channels-1, model_channels, 3, padding=1),
+            MixedRangeActivation() if use_mixed_activation else SiLU(),
+            conv_nd(dims, model_channels, model_channels, 1)
+        )
+
     def convert_to_fp16(self):
         """
         Convert the torso of the model to float16.
@@ -504,40 +554,134 @@ class UNetVideoModel(nn.Module):
         elif len(x.shape) == 4:
             B, T, C, H = x.shape
         timesteps = timesteps.view(B, 1).expand(B, T)
+        
+        # 检查输入维度并提供默认值
+        if obs_mask is None:
+            # obs_mask = th.zeros_like(x[:, :, :1]) # 这可能导致维度不匹配，如果x是5D
+             obs_mask = th.zeros((B, T, 1) + x.shape[3:], device=x.device, dtype=x.dtype)
+        if latent_mask is None:
+            # latent_mask = th.zeros_like(x[:, :, :1])
+             latent_mask = th.zeros((B, T, 1) + x.shape[3:], device=x.device, dtype=x.dtype)
+        
+        # 计算 attn_mask
         attn_mask = (obs_mask + latent_mask).clip(max=1)
-        # add channel to indicate obs
+
+        # 创建观测点指示器
         indicator_template = th.ones_like(x[:, :, :1, :, :]) if len(x.shape) == 5 else th.ones_like(x[:, :, :1, :])
         obs_indicator = indicator_template * obs_mask
-        combined_x = th.cat([x*(1-obs_mask) + x0*obs_mask,
-                    obs_indicator],
-                   dim=2,
-        )
-        combined_x = combined_x.reshape(B*T, combined_x.shape[2], *combined_x.shape[3:])
+        
+        # 简化 cat 操作，避免维度问题
+        combined_x = th.cat([
+            x*(1-obs_mask) + x0*obs_mask,  # 主通道（观测点用x0替换）
+            obs_indicator                  # 观测点指示器
+        ], dim=2) # Shape: [B, T, C+1, H, W]
         
         # 记录实际输入通道数，以便后续处理
-        actual_channels = combined_x.shape[1]
-        if actual_channels != self.in_channels and actual_channels != self.in_channels - 1:
-            # 只有当差异不是预期的+1时才记录警告
-            print(f"警告: 输入通道数 ({actual_channels}) 与模型预期 ({self.in_channels}) 不匹配")
-        
+        actual_channels = combined_x.shape[2]
+        if actual_channels != self.in_channels:
+             # 允许 actual_channels 比 self.in_channels 少1（因为条件引导层输入是 in_channels-1）
+             # 或者等于 self.in_channels (因为我们拼接了 obs_indicator)
+             # 这里逻辑调整为检查是否为 C+1
+             expected_combined_channels = self.in_channels # self.in_channels 是定义时的 C+1
+             if actual_channels != expected_combined_channels:
+                  print(f"警告: combined_x 通道数 ({actual_channels}) 与模型预期 ({expected_combined_channels}) 不匹配")
+
+        # --- 使用 .view() 进行 Reshape ---
+        reshaped_combined_x = combined_x.view(B*T, actual_channels, *combined_x.shape[3:]) # Shape: [B*T, C+1, H, W]
+
         # 使用输入适配器处理输入
-        adapted_x, land_mask = self.input_adapter(combined_x)
+        # 确保适配器接收和返回4D张量
+        adapted_x, land_mask = self.input_adapter(reshaped_combined_x) # adapted_x Shape: [B*T, C+1, H, W]
         
         timesteps = timesteps.reshape(B*T)
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        h = adapted_x.type(adapted_x.dtype)
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels)) # Shape: [B*T, emb_dim]
+        
+        # --- 确认 h 是 4D ---
+        h = adapted_x.type(adapted_x.dtype) # Shape: [B*T, C+1, H, W]
+        
         attns = {'spatial': [], 'temporal': [], 'mixed': []} if return_attn_weights else None
+        
+        # 以下代码处理前向传播
         for layer, module in enumerate(self.input_blocks):
-            h = module(h, emb,  attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
+            # --- 确认传入模块的 h 是 4D ---
+            if len(h.shape) != 4:
+                 print(f"警告: 传递给 input_block {layer} 的张量 h 不是4D，形状为 {h.shape}")
+            h = module(h, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
             hs.append(h)
-        h = self.middle_block(h, emb,  attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
+        
+        # --- 确认 middle_block 输入是 4D ---
+        if len(h.shape) != 4:
+            print(f"警告: 传递给 middle_block 的张量 h 不是4D，形状为 {h.shape}")
+        h = self.middle_block(h, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
+        
+        # 应用条件引导，但确保维度匹配
+        try:
+            # --- 确认 h 在条件引导前是 4D ---
+            if len(h.shape) != 4:
+                 print(f"警告: 条件引导前的张量 h 不是4D，形状为 {h.shape}")
+
+            # 重塑x0和obs_mask以匹配h的维度
+            reshaped_x0 = x0.reshape(B*T, C, *x0.shape[3:]) # x0原始通道数为C
+            reshaped_mask = obs_mask.reshape(B*T, 1, *obs_mask.shape[3:]) # mask通道数为1
+
+            # 准备条件引导的输入 (通道数为 C)
+            condition_input = reshaped_x0
+
+             # --- 确认条件引导输入是 4D ---
+            if len(condition_input.shape) != 4:
+                 print(f"警告: 传递给 condition_guide 的张量不是4D，形状为 {condition_input.shape}")
+
+
+            # 应用条件引导
+            if condition_input.shape[2:] == h.shape[2:]:  # 确保空间维度匹配
+                # 注意：condition_guide 输入通道是 self.in_channels-1 = C
+                condition_feature = self.condition_guide(condition_input) # 输出通道是 model_channels
+
+                 # --- 确认条件引导输出和 h 的形状 ---
+                if len(condition_feature.shape) != 4:
+                    print(f"警告: condition_guide 输出不是4D，形状为 {condition_feature.shape}")
+                if condition_feature.shape[1] != h.shape[1]: # 检查通道数是否匹配
+                    print(f"警告: condition_guide 输出通道 ({condition_feature.shape[1]}) 与 h 通道 ({h.shape[1]}) 不匹配")
+
+
+                if condition_feature.shape == h.shape:  # 最后检查确保完全匹配
+                    h = h + condition_feature * reshaped_mask # 使用mask应用引导
+                else:
+                     # 如果形状不匹配，可能需要调整 condition_guide 的输出通道或 h 的通道
+                     print(f"跳过条件引导：形状不匹配 - guide: {condition_feature.shape}, h: {h.shape}")
+
+        except Exception as e:
+            print(f"条件引导层应用失败: {e}")
+            # 跳过条件引导，继续处理
+        
+        # 继续解码器部分
         for module in self.output_blocks:
-            cat_in = th.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb,  attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
+             # --- 确认解码器输入是 4D ---
+             pop_h = hs.pop()
+             if len(h.shape) != 4 or len(pop_h.shape) != 4:
+                  print(f"警告: 传递给 output_block 的张量不是4D - h: {h.shape}, pop_h: {pop_h.shape}")
+             
+             # --- 修改这里的通道数检查 ---
+             # module[0] 是一个 ResBlock 实例
+             # ResBlock 的输入通道数由 ch + input_block_chans.pop() 决定，
+             # 并且 ResBlock 的第一个卷积层输入通道数就是 ResBlock 的输入通道数 self.channels。
+             # 因此，我们可以直接使用 module[0].channels 来检查输入 ResBlock 的通道数。
+             # cat_in 的通道数是 h.shape[1] + pop_h.shape[1]
+             # module[0].channels 是 ResBlock 期望的输入通道数
+             expected_input_channels = module[0].channels 
+             actual_input_channels = h.shape[1] + pop_h.shape[1]
+             if actual_input_channels != expected_input_channels: 
+                  print(f"警告: output_block 输入通道数 ({actual_input_channels}) 与 ResBlock 期望 ({expected_input_channels}) 不匹配")
+
+             cat_in = th.cat([h, pop_h], dim=1)
+             h = module(cat_in, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
+        
         h = h.type(adapted_x.dtype)
         out = self.out(h)
-        return out.view(B, T, self.out_channels, *adapted_x.shape[2:]), attns
+        # --- 确保输出是 5D ---
+        final_out = out.view(B, T, self.out_channels, *adapted_x.shape[2:])
+        return final_out, attns
 
     def get_feature_vectors(self, x, timesteps, y=None):
         """

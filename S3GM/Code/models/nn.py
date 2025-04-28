@@ -46,7 +46,7 @@ class InputRangeAdapter(nn.Module):
     """
     输入范围适配器，用于处理超出[0,1]范围的数据
     """
-    def __init__(self, in_channels, out_channels=None, land_value=1.5):
+    def __init__(self, in_channels, out_channels=None, land_value=1.5, init_scale=0.4, init_shift=0.1):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels or in_channels
@@ -56,9 +56,11 @@ class InputRangeAdapter(nn.Module):
         self.channel_scales = nn.Parameter(th.ones(1, 1, 1, 1))
         self.channel_shifts = nn.Parameter(th.zeros(1, 1, 1, 1))
         
-        # 初始根据水深数据特性优化初始值
-        nn.init.constant_(self.channel_scales, val=0.4)
-        nn.init.constant_(self.channel_shifts, val=0.1)
+        # 使用传入的参数初始化
+        # nn.init.constant_(self.channel_scales, val=0.4)
+        # nn.init.constant_(self.channel_shifts, val=0.1)
+        nn.init.constant_(self.channel_scales, val=init_scale)
+        nn.init.constant_(self.channel_shifts, val=init_shift)
         
         # 值范围映射层
         if self.out_channels != self.in_channels:

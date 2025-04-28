@@ -171,30 +171,32 @@ class VESDE(SDE):
 class VPSDE(SDE):
     def __init__(self, config):
         """构造VPSDE
-        
+
         Args:
             config: 配置对象，包含以下参数：
                 - beta_min: beta(0)的值，默认0.1
                 - beta_max: beta(1)的值，默认20.0
-                - N: 离散化步数
+                - num_scales: 离散化步数 (对应 SDE 的 N)
         """
-        beta_min = config.get('beta_min', 0.1)
-        beta_max = config.get('beta_max', 20.0)
-        N = config.get('N', 1000)
+        # --- 从传入的 config 对象读取参数 ---
+        beta_min = config.beta_min # 直接访问属性
+        beta_max = config.beta_max # 直接访问属性
+        N = config.num_scales      # 使用 num_scales 作为 N
+
         super().__init__(N)
-        
+
         self.beta_0 = beta_min
         self.beta_1 = beta_max
         self.N = N
-        self.config = config
-        
-        # 计算离散化的beta序列和alpha序列
+        self.config = config # 存储完整的配置对象
+
+        # 重新计算离散化序列
         self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)
         self.alphas = 1. - self.discrete_betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_1m_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
-        
+
         # 添加数值稳定性参数
         self.stability_eps = 1e-8
 

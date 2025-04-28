@@ -4,11 +4,12 @@ image_size: 64
 num_frames: 6     # 2018-2023
 version: "bathymetry_v0"
 data: "bathymetry"
+parameterization: "v"
 
 # 模型架构参数
 model_channels: 128
 num_res_blocks: 4
-attention_resolutions: [8, 16, 32]
+attention_resolutions: [4, 8, 16]
 dropout: 0.2
 channel_mult: [1, 2, 4, 4]
 dims: 2
@@ -23,7 +24,7 @@ num_modals: 1
 # SDE配置
 sde_type: 'vpsde'  # 指定使用VPSDE
 beta_min: 0.1
-beta_max: 20.0
+beta_max: 1000
 num_scales: 1000
 
 # 扩散模型参数
@@ -34,11 +35,14 @@ probability_flow: true
 
 # 采样参数
 sampling:
-  alpha: 0.85
-  inner_loop: 20
-  snr: 0.128
+  alpha: 0.1
+  gamma1: 0 
+  gamma2: 0
+  gamma_spatial: 5.0e-7
+  inner_loop: 1
+  snr: 0.01
   continuous: true
-  num_steps: 3
+  num_steps: 3 
   overlap: 2
 
 # RPE相关参数
@@ -63,6 +67,10 @@ requires_grad: true
 use_ema: true
 ema_decay: 0.9999
 
+# VESDE参数
+sigma_min: 0.002
+sigma_max: 10
+
 # 数值稳定性参数
 eps: 1.0e-12
 
@@ -80,12 +88,13 @@ physics_guide: false
 
 # 稳定性参数
 stability:
-  grad_clip: 1.0
+  grad_clip: 100.0
   check_grad_interval: 5
   debug: true
   monitor_data_ranges: true
   x0_hat_clamp: true
   score_clamp_range: 20.0
+  gradient_clip_dps: 10.0
 
 # 裁剪参数
 clipping:
@@ -106,6 +115,11 @@ range_adaptation:
   enabled: true
   use_mixed_activation: true
   land_value: 1.5
-  init_scale: 0.4
-  init_shift: 0.1
+  init_scale: 1.0
+  init_shift: 0.0
   attention_scale_factor: 0.8
+
+# 输入通道权重
+input_weights:
+  classic: 0.7
+  gebco: 0.3
