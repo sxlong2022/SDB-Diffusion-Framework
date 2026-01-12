@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.kiro/
+
+# Data files (too large for git)
+GEBCO_Bathymetry/
+Official_nautical_chart/
+intermediate_results/
+results/
+logging/
+
+# Temporary files
+*.tmp
+*.bak
+~$*
+*.docx
+*.xlsx
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.log

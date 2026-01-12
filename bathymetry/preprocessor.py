@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 import ee
 ee.Authenticate()
-ee.Initialize(project='YOUR_GEE_PROJECT_ID')
+ee.Initialize(project='fast-banner-452901-c8')
 import glob
 import os
 

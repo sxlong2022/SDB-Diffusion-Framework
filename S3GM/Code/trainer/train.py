@@ -12,6 +12,8 @@ from tqdm import tqdm
 import json
 from collections import namedtuple
 
+from sampler.utils import setup_seed
+
 from loss import loss_fn_video, loss_fn
 
 from .utils import restore_checkpoint, save_checkpoint
@@ -22,6 +24,7 @@ from einops import rearrange
 
 
 def train(config):
+    setup_seed(666)
     log_path = config.results_path + '/log.txt'
     loss_log_path = config.results_path + '/loss_log.npy'
     checkpoint_path = config.results_path + '/checkpoint.pth'

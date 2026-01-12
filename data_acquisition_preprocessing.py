@@ -9,11 +9,11 @@ logger = logging.getLogger(__name__)
 def initialize_gee():
     """初始化 Google Earth Engine."""
     try:
-        ee.Initialize(project='YOUR_GEE_PROJECT_ID')
+        ee.Initialize(project='fast-banner-452901-c8')
     except Exception as e:
         print(f"初始化 Google Earth Engine 失败: {e}")
         ee.Authenticate()
-        ee.Initialize(project='YOUR_GEE_PROJECT_ID')
+        ee.Initialize(project='fast-banner-452901-c8')
 
 def get_sentinel2_images(aoi, date_range):
     """获取并预处理Sentinel-2影像
