@@ -11,7 +11,7 @@ class RPENet(nn.Module):
         self.embed_distances = nn.Linear(3, channels)
         self.embed_diffusion_time = nn.Linear(time_embed_dim, channels)
         
-        # 使用混合激活函数
+        # Use mixed activation function
         self.activation = MixedRangeActivation() if use_mixed_activation else nn.SiLU()
         
         self.out = nn.Linear(channels, channels)
@@ -20,12 +20,12 @@ class RPENet(nn.Module):
         self.channels = channels
         self.num_heads = num_heads
         
-        # 添加尺度适应层
+        # Add scale adaptation layer
         self.scale_adaptation = nn.Parameter(th.ones(1) * 0.5)
         self.shift_adaptation = nn.Parameter(th.zeros(1))
 
     def forward(self, temb, relative_distances):
-        # 使用对数变换处理相对距离，更好地处理大范围数据
+        # Use log transform for relative distances, better handling of large range data
         distance_embs = th.stack(
             [th.log(1+(relative_distances).clamp(min=0)),
              th.log(1+(-relative_distances).clamp(min=0)),
@@ -36,17 +36,17 @@ class RPENet(nn.Module):
         B, T, _ = relative_distances.shape
         C = self.channels
         
-        # 应用缩放适应
+        # Apply scale adaptation
         time_emb = self.embed_diffusion_time(temb).view(B, T, 1, C) 
         dist_emb = self.embed_distances(distance_embs)
         
-        # 合并嵌入
+        # Merge embeddings
         emb = time_emb + dist_emb
         
-        # 应用尺度适应
+        # Apply scale adaptation
         emb = emb * self.scale_adaptation + self.shift_adaptation
         
-        # 使用激活函数
+        # Apply activation function
         return self.out(self.activation(emb)).view(*relative_distances.shape, self.num_heads, self.channels//self.num_heads)
 
 
@@ -62,24 +62,24 @@ class RPE(nn.Module):
         self.num_heads = num_heads
         self.head_dim = channels // self.num_heads
         self.use_rpe_net = use_rpe_net
-        self.scale = th.sqrt(th.tensor(self.head_dim).float()).item()  # 用于缩放注意力得分
+        self.scale = th.sqrt(th.tensor(self.head_dim).float()).item()  # Used for scaling attention scores
         
         if use_rpe_net:
             self.rpe_net = RPENet(channels, num_heads, time_embed_dim, use_mixed_activation=use_mixed_activation)
         else:
             self.lookup_table_weight = nn.Parameter(
-                th.zeros(2 * 32 + 1,  # 使用默认beta=32
+                th.zeros(2 * 32 + 1,  # Use default beta=32
                          self.num_heads,
                          self.head_dim))
             
-        # 添加数值稳定性参数
+        # Numerical stability parameters
         self.stability_eps = 1e-6
 
     def get_R(self, pairwise_distances, temb):
         if self.use_rpe_net:
             return self.rpe_net(temb, pairwise_distances)
         else:
-            # 使用处理后的相对距离索引查找表
+            # Use processed relative distance index lookup table
             clamped_indices = (pairwise_distances + 32).clamp(0, 2 * 32).long()
             return self.lookup_table_weight[clamped_indices]  # BxTxTxHx(C/H)
 
@@ -92,42 +92,42 @@ class RPE(nn.Module):
             raise ValueError(f"Unexpected RPE attention mode: {mode}")
 
     def forward_qk(self, qk, pairwise_distances, temb):
-        # 检查输入形状是否合理
+        # Check if input shape is reasonable
         if qk.dim() != 5:
             raise ValueError(f"Expected 5D tensor for qk, got shape {qk.shape}")
             
-        # 获取相对位置编码
+        # Get relative position encoding
         R = self.get_R(pairwise_distances, temb)
         
-        # 应用稳定性检查
+        # Apply stability check
         if th.isnan(R).any() or th.isinf(R).any():
-            print(f"警告: 检测到RPE中的R包含NaN或Inf值")
+            print(f"Warning: R in RPE contains NaN or Inf values")
             R = th.nan_to_num(R, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # 使用einsum计算注意力分数
+        # Use einsum to calculate attention scores
         attention_scores = th.einsum(
             "bdhtf,btshf->bdhts", qk, R  # BxDxHxTxT
         )
         
-        # 缩放注意力分数以增强稳定性
+        # Scale attention scores for stability
         attention_scores = attention_scores / (self.scale + self.stability_eps)
         
         return attention_scores
 
     def forward_v(self, attn, pairwise_distances, temb):
-        # 检查输入形状是否合理
+        # Check if input shape is reasonable
         if attn.dim() != 5:
             raise ValueError(f"Expected 5D tensor for attn, got shape {attn.shape}")
             
-        # 获取相对位置编码
+        # Get relative position encoding
         R = self.get_R(pairwise_distances, temb)
         
-        # 应用稳定性检查
+        # Apply stability check
         if th.isnan(R).any() or th.isinf(R).any():
-            print(f"警告: 检测到RPE中的R包含NaN或Inf值")
+            print(f"Warning: R in RPE contains NaN or Inf values")
             R = th.nan_to_num(R, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # 使用einsum计算加权值
+        # Use einsum to calculate weighted values
         weighted_values = th.einsum(
             "bdhts,btshf->bdhtf", attn, R  # BxDxHxTxT
         )
@@ -144,8 +144,8 @@ class RPEAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         head_dim = channels // num_heads
-        # 增加scale计算的稳定性
-        self.scale = (head_dim ** -0.5) * 0.8  # 稍微降低scale以增强对大值的稳定性
+        # Increase scale calculation stability
+        self.scale = (head_dim ** -0.5) * 0.8  # Slightly reduce scale to enhance stability for large values
         self.use_checkpoint = use_checkpoint
         self.use_mixed_activation = use_mixed_activation
 
@@ -153,10 +153,10 @@ class RPEAttention(nn.Module):
         self.proj_out = zero_module(nn.Linear(channels, channels))
         self.norm = normalization(channels)
 
-        # 数值稳定性参数
+        # Numerical stability parameters
         self.stability_eps = 1e-6
         
-        # 添加输入范围自适应层
+        # Add input range adaptation layer
         self.input_adjustment = nn.Sequential(
             nn.Linear(channels, channels),
             MixedRangeActivation() if use_mixed_activation else nn.SiLU(),
@@ -187,45 +187,45 @@ class RPEAttention(nn.Module):
     def _forward(self, x, temb, frame_indices, attn_mask):
         B, D, C, T = x.shape
         
-        # 重塑张量为批次处理格式
+        # Reshape tensor for batch processing
         x = x.reshape(B*D, C, T)
         
-        # 应用归一化
+        # Apply normalization
         x = self.norm(x)
         
-        # 重塑回原始格式
+        # Reshape back to original format
         x = x.view(B, D, C, T)
         
-        # 调整输入范围（残差连接）
+        # Adjust input range (residual connection)
         x_adjusted = x + self.input_adjustment(x.transpose(-1, -2)).transpose(-1, -2)
         
-        # 转置为注意力计算所需形状
+        # Transpose to shape required for attention computation
         x = th.einsum("BDCT -> BDTC", x_adjusted)
         
-        # 计算QKV
+        # Compute QKV
         qkv = self.qkv(x).reshape(B, D, T, 3, self.num_heads, C // self.num_heads)
         qkv = th.einsum("BDTtHF -> tBDHTF", qkv)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        # 应用缩放
+        # Apply scaling
         q = q * self.scale
         
-        # 计算注意力分数
+        # Compute attention scores
         attn = (q @ k.transpose(-2, -1))  # BxDxHxTxT
         
-        # 应用相对位置编码
+        # Apply relative position encoding
         if frame_indices is not None and (self.rpe_q is not None or self.rpe_k is not None or self.rpe_v is not None):
-            # 计算帧索引之间的相对距离
+            # Compute relative distances between frame indices
             pairwise_distances = (frame_indices.unsqueeze(-1) - frame_indices.unsqueeze(-2))
             
-            # 应用RPE
+            # Apply RPE
             if self.rpe_k is not None:
                 attn = attn + self.rpe_k(q, pairwise_distances, temb=temb, mode="qk")
             
             if self.rpe_q is not None:
                 attn = attn + self.rpe_q(k * self.scale, pairwise_distances, temb=temb, mode="qk").transpose(-1, -2)
         
-        # 定义带掩码的softmax函数
+        # Define softmax function with mask
         def softmax(w, attn_mask):
             if attn_mask is not None:
                 allowed_interactions = attn_mask.view(B, 1, T) * attn_mask.view(B, T, 1)
@@ -234,41 +234,41 @@ class RPEAttention(nn.Module):
                 inf_mask[inf_mask == 1] = float('inf')
                 w = w - inf_mask.view(B, 1, 1, T, T)
             
-            # 应用数值稳定性处理
+            # Apply numerical stability processing
             w_max = th.max(w, dim=-1, keepdim=True)[0].detach()
             w = w - w_max
             w_exp = th.exp(w.float())
             
-            # 检查是否有NaN或Inf
+            # Check for NaN or Inf
             if th.isnan(w_exp).any() or th.isinf(w_exp).any():
-                print(f"警告: Softmax计算中出现NaN或Inf")
+                print(f"Warning: NaN or Inf in Softmax computation")
                 w_exp = th.nan_to_num(w_exp, nan=0.0, posinf=1.0, neginf=0.0)
             
-            # 计算softmax
+            # Compute softmax
             w_sum = w_exp.sum(dim=-1, keepdim=True) + self.stability_eps
             return (w_exp / w_sum).type(w.dtype)
         
-        # 应用softmax
+        # Apply softmax
         attn = softmax(attn, attn_mask)
         
-        # 计算加权和
+        # Compute weighted sum
         out = attn @ v
         
-        # 应用值的相对位置编码
+        # Apply relative position encoding for values
         if frame_indices is not None and self.rpe_v is not None:
             pairwise_distances = (frame_indices.unsqueeze(-1) - frame_indices.unsqueeze(-2))
             out = out + self.rpe_v(attn, pairwise_distances, temb=temb, mode="v")
         
-        # 重塑张量
+        # Reshape tensor
         out = th.einsum("BDHTF -> BDTHF", out).reshape(B, D, T, C)
         
-        # 应用输出投影
+        # Apply output projection
         out = self.proj_out(out)
         
-        # 残差连接
+        # Residual connection
         x = x + out
         
-        # 转置回原始格式
+        # Transpose back to original format
         x = th.einsum("BDTC -> BDCT", x)
         
         return x, attn

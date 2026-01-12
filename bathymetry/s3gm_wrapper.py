@@ -1089,7 +1089,7 @@ class S3GMWrapper:
                 is_divergent = loss.item() > 1000 or np.isnan(loss.item())
                 
                 if not is_divergent:
-                    # 使用 scaler 进行反向传播和优化 (仅在损失正常时)
+                    # Use scaler for backward pass and optimization (only when loss is normal)
                     scaler.scale(loss).backward() # 1. Scale loss and backprop
 
                     # 2. Unscale gradients before clipping
@@ -1104,27 +1104,27 @@ class S3GMWrapper:
                     # 5. Update the scale for next iteration
                     scaler.update()
                 else:
-                    logger.warning(f"Epoch {epoch+1}:检测到损失发散 (loss={loss.item():.4e})，跳过梯度更新")
+                    logger.warning(f"Epoch {epoch+1}: Loss divergence detected (loss={loss.item():.4e}), skipping gradient update")
                 
-                # 记录和早停 (使用原始loss值，即使发散也记录NaN或大值)
+                # Record and early stop (use original loss value, record NaN or large value even if divergent)
                 loss_value_for_tracking = loss.item()
                 loss_window.append(loss_value_for_tracking)
                 if len(loss_window) > window_size:
                     loss_window.pop(0)
                 
-                # 计算平均损失时排除 NaN/Inf
+                # Exclude NaN/Inf when calculating average loss
                 finite_losses = [l for l in loss_window if np.isfinite(l)]
                 if not finite_losses:
-                    avg_loss = float('inf') # 如果窗口内全是无效值
+                    avg_loss = float('inf') # If all values in window are invalid
                 else:    
                     avg_loss = sum(finite_losses) / len(finite_losses)
 
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss_value_for_tracking:.4f}, Avg Loss: {avg_loss:.4f}")
                     
-                    # 使用平均损失进行早停判断 (仅当 avg_loss 是有效数值时)
+                    # Use average loss for early stopping (only when avg_loss is valid)
                     if np.isfinite(avg_loss):
-                        if avg_loss < min_loss * 0.95:  # 只有明显改进才重置
+                        if avg_loss < min_loss * 0.95:  # Only reset on significant improvement
                             min_loss = avg_loss
                             patience_counter = 0
                             logger.info(f"  (Avg loss improved to {min_loss:.4f})")
@@ -1136,10 +1136,10 @@ class S3GMWrapper:
                             logger.info(f"Early stopping at epoch {epoch+1}")
                             break
                 
-                # --- 修改：在每个 epoch 结束时调用 CosineAnnealingLR --- 
+                # --- Modified: Call CosineAnnealingLR at end of each epoch --- 
                 # if np.isfinite(avg_loss):
-                #     scheduler.step(avg_loss)  # ReduceLROnPlateau 使用平均损失
-                # 只在预热期结束后才更新 CosineAnnealingLR 调度器
+                #     scheduler.step(avg_loss)  # ReduceLROnPlateau uses average loss
+                # Only update CosineAnnealingLR scheduler after warmup period ends
                 if epoch >= warmup_epochs:
                     scheduler.step()
                 # --------------------------------------------------
@@ -1147,23 +1147,23 @@ class S3GMWrapper:
             return True
         
         except Exception as e:
-            logger.error(f"预训练失败: {str(e)}")
+            logger.error(f"Pre-training failed: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False
 
     def _validate_model(self, x, condition_x):
-        """验证模型性能"""
+        """Validate model performance"""
         self.model.eval()
         with torch.no_grad():
             test_t = torch.ones(1, device=self.device) * 0.5
             B, T = x.shape[:2]
             
-            # 创建验证用的掩码
+            # Create validation mask
             latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
             obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
             
-            # 测试模型输出
+            # Test model output
             test_score, _ = self.model(
                 x=x,
                 x0=condition_x,
@@ -1173,11 +1173,11 @@ class S3GMWrapper:
                 frame_indices=torch.arange(T, device=self.device).expand(B, -1)
             )
             
-            # 记录验证结果
-            logger.info(f"验证 - 模型输出范围: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
+            # Record validation results
+            logger.info(f"Validation - Model output range: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
 
     def _check_model_weights(self):
-        """检查模型权重的有效性，并以更低的日志级别报告"""
+        """Check model weight validity and report at lower log level"""
         try:
             total_params = 0
             zero_params = 0
@@ -1191,91 +1191,91 @@ class S3GMWrapper:
                 inf_params += torch.isinf(param).sum().item()
                 nan_params += torch.isnan(param).sum().item()
                 
-                # 只在调试级别记录单个参数的零值情况
+                # Only log individual parameter zero values at debug level
                 if zero_count == param.numel() and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"{name} 权重全为0")
-                    # 使用正态分布重新初始化
+                    logger.debug(f"{name} weights are all zeros")
+                    # Reinitialize with normal distribution
                     if 'bias' in name:
                         nn.init.zeros_(param)
                     else:
                         nn.init.normal_(param, mean=0.0, std=0.02)
             
-            # 只在出现严重问题时记录警告
+            # Only log warning when serious issues occur
             if inf_params > 0 or nan_params > 0:
-                logger.error("模型权重中存在无穷值或NaN!")
-                logger.error(f"- 无穷值参数比例: {inf_params/total_params:.2%}")
-                logger.error(f"- NaN值参数比例: {nan_params/total_params:.2%}")
+                logger.error("Model weights contain infinity or NaN!")
+                logger.error(f"- Infinity parameter ratio: {inf_params/total_params:.2%}")
+                logger.error(f"- NaN parameter ratio: {nan_params/total_params:.2%}")
                 return False
             
-            # 将权重统计信息改为INFO级别的单行日志
-            if zero_params/total_params > 0.1:  # 如果零值参数比例超过10%才记录
-                logger.info(f"模型参数统计 - 总数: {total_params}, 零值比例: {zero_params/total_params:.2%}")
+            # Change weight statistics to single-line INFO level log
+            if zero_params/total_params > 0.1:  # Only log if zero parameter ratio exceeds 10%
+                logger.info(f"Model parameter stats - Total: {total_params}, Zero ratio: {zero_params/total_params:.2%}")
             
             return True
             
         except Exception as e:
-            logger.error(f"检查模型权重失败: {str(e)}")
+            logger.error(f"Failed to check model weights: {str(e)}")
             raise
 
     def _manage_memory(self):
-        """内存管理"""
+        """Memory management"""
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()  # 确保所有CUDA操作完成
+        torch.cuda.synchronize()  # Ensure all CUDA operations complete
 
     def _get_score_fn(self):
-        """获取评分函数"""
-        # 获取y数据（观测深度）和mask（观测掩码）
-        # 假设在_run_diffusion中接收input_tensor，其中包含深度和掩码通道
+        """Get score function"""
+        # Get y data (observed depth) and mask (observation mask)
+        # Assume input_tensor received in _run_diffusion contains depth and mask channels
         
         def score_fn(x, t):
-            """评分函数，计算给定噪声水平t下的分数"""
+            """Score function, calculate score at given noise level t"""
             # x: [batch_size, num_frames, channels, height, width]
             # t: [batch_size]
             
-            # 获取原始shape
+            # Get original shape
             shape = x.shape
             
-            # 确保t是一个向量
+            # Ensure t is a vector
             t = t.view(-1)
             
-            # 从input_tensor中提取观测数据和掩码
-            # 假设在self.condition_data已经存储了预处理好的条件数据
+            # Extract observation data and mask from input_tensor
+            # Assume preprocessed condition data is stored in self.condition_data
             if hasattr(self, 'condition_data') and self.condition_data is not None:
-                # 获取条件数据
-                x0 = self.condition_data['depth'].to(x.device)  # 深度通道，形状应与x匹配
-                obs_mask = self.condition_data['mask'].to(x.device)  # 掩码通道，指示观测点位置
+                # Get condition data
+                x0 = self.condition_data['depth'].to(x.device)  # Depth channel, shape should match x
+                obs_mask = self.condition_data['mask'].to(x.device)  # Mask channel, indicates observation point locations
                 
-                # 记录日志（首次调用时）
+                # Log (on first call)
                 if not hasattr(score_fn, 'logged_condition'):
-                    logger.info(f"条件深度范围: [{x0.min().item():.4f}, {x0.max().item():.4f}]")
-                    logger.info(f"观测点数量: {obs_mask.sum().item()}")
+                    logger.info(f"Condition depth range: [{x0.min().item():.4f}, {x0.max().item():.4f}]")
+                    logger.info(f"Number of observation points: {obs_mask.sum().item()}")
                     score_fn.logged_condition = True
             else:
-                # 如果没有条件数据，使用零初始化
+                # If no condition data, use zero initialization
                 x0 = torch.zeros_like(x)
                 obs_mask = torch.zeros((shape[0], shape[1], 1, shape[3], shape[4]), device=x.device)
-                logger.warning("没有找到条件数据，使用零初始化!")
+                logger.warning("No condition data found, using zero initialization!")
             
-            # 强化条件表示
-            # 1. 增加条件掩码通道的权重，使模型更关注观测点
-            enhanced_obs_mask = obs_mask * 2.0  # 增大掩码权重
+            # Enhance condition representation
+            # 1. Increase condition mask channel weight to make model focus more on observation points
+            enhanced_obs_mask = obs_mask * 2.0  # Increase mask weight
             
-            # 2. 创建条件差异通道 - 帮助模型理解观测点与当前预测的差异
+            # 2. Create condition difference channel - help model understand difference between observation points and current prediction
             with torch.no_grad():
                 _, x_noisy, _ = self.sde.marginal_prob(x0, t.reshape(-1, 1, 1, 1, 1))
-                condition_diff = (x - x_noisy) * obs_mask  # 指示条件点的差异方向
+                condition_diff = (x - x_noisy) * obs_mask  # Indicate difference direction of condition points
             
-            # 统一掩码，用于注意力机制
+            # Unified mask for attention mechanism
             latent_mask = torch.zeros_like(obs_mask)
             
-            # 调用模型计算分数，传递增强的条件信息
+            # Call model to compute score, pass enhanced condition information
             score, _ = self.model(
                 x, 
                 x0=x0, 
                 timesteps=t, 
-                obs_mask=enhanced_obs_mask,  # 增强的掩码
+                obs_mask=enhanced_obs_mask,  # Enhanced mask
                 latent_mask=latent_mask,
-                frame_indices=None,  # 提供帧索引信息
+                frame_indices=None,  # Provide frame index information
                 return_attn_weights=False
             )
             

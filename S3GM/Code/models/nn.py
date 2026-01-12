@@ -14,37 +14,37 @@ class SiLU(nn.Module):
         return x * th.sigmoid(x)
 
 
-# 新增：混合激活函数 - 适应更广范围的输入值
+# New: Mixed activation function - adapts to wider range of input values
 class MixedRangeActivation(nn.Module):
     """
-    混合激活函数，更适合处理超出[0,1]范围的数据
-    结合了SiLU和GELU的特性，对正负值都有良好的响应
+    Mixed activation function, better suited for handling data outside [0,1] range
+    Combines characteristics of SiLU and GELU, with good response to both positive and negative values
     """
     def __init__(self):
         super().__init__()
-        # 可学习的通道适应参数
+        # Learnable channel adaptation parameters
         self.neg_scale = nn.Parameter(th.ones(1) * 0.2)
         self.pos_scale = nn.Parameter(th.ones(1))
     
     def forward(self, x):
-        # 将输入分为正值部分和负值部分单独处理
+        # Separate input into positive and negative parts for individual processing
         pos_mask = (x > 0).float()
         neg_mask = 1.0 - pos_mask
         
-        # 正值区域：使用SiLU
+        # Positive region: use SiLU
         pos_out = x * th.sigmoid(x) * self.pos_scale
         
-        # 负值区域：使用GELU变体，对负值更友好
+        # Negative region: use GELU variant, more friendly to negative values
         neg_out = 0.5 * x * (1 + th.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * th.pow(x, 3)))) * self.neg_scale
         
-        # 组合正负部分
+        # Combine positive and negative parts
         return pos_out * pos_mask + neg_out * neg_mask
 
 
-# 新增：输入数据范围适配器
+# New: Input data range adapter
 class InputRangeAdapter(nn.Module):
     """
-    输入范围适配器，用于处理超出[0,1]范围的数据
+    Input range adapter for handling data outside [0,1] range
     """
     def __init__(self, in_channels, out_channels=None, land_value=1.5, init_scale=0.4, init_shift=0.1):
         super().__init__()
@@ -52,43 +52,43 @@ class InputRangeAdapter(nn.Module):
         self.out_channels = out_channels or in_channels
         self.land_value = land_value
         
-        # 通道适应参数 - 注意：保持为成员变量，但在forward中动态匹配
+        # Channel adaptation parameters - Note: keep as member variables, but dynamically match in forward
         self.channel_scales = nn.Parameter(th.ones(1, 1, 1, 1))
         self.channel_shifts = nn.Parameter(th.zeros(1, 1, 1, 1))
         
-        # 使用传入的参数初始化
+        # Initialize with passed parameters
         # nn.init.constant_(self.channel_scales, val=0.4)
         # nn.init.constant_(self.channel_shifts, val=0.1)
         nn.init.constant_(self.channel_scales, val=init_scale)
         nn.init.constant_(self.channel_shifts, val=init_shift)
         
-        # 值范围映射层
+        # Value range mapping layer
         if self.out_channels != self.in_channels:
             self.proj = nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1)
         else:
             self.proj = nn.Identity()
     
     def forward(self, x):
-        # 获取实际输入通道数
+        # Get actual input channel count
         actual_channels = x.shape[1]
         
-        # 识别陆地区域（值接近land_value）
+        # Identify land regions (values close to land_value)
         land_mask = (th.abs(x - self.land_value) < 0.1).float()
         
-        # 对水域部分应用范围适配（确保陆地值不受影响）
+        # Apply range adaptation to water regions (ensure land values are not affected)
         water_mask = 1.0 - land_mask
-        adapted_x = x * water_mask  # 保留水域部分
+        adapted_x = x * water_mask  # Keep water region
         
-        # 应用通道缩放和偏移（只对水域部分）- 广播到所有通道
+        # Apply channel scaling and offset (only to water region) - broadcast to all channels
         scales = self.channel_scales.expand(-1, actual_channels, -1, -1)
         shifts = self.channel_shifts.expand(-1, actual_channels, -1, -1)
         
         adapted_x = adapted_x * scales + shifts
         
-        # 恢复陆地值
+        # Restore land values
         adapted_x = adapted_x + x * land_mask
         
-        # 投影到所需通道数
+        # Project to required channel count
         return self.proj(adapted_x), land_mask
 
 

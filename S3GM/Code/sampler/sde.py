@@ -115,12 +115,12 @@ class VESDE(SDE):
         """Construct a Variance Exploding SDE.
 
         Args:
-            config: 配置对象，必须包含以下参数：
+            config: Configuration object, must contain the following parameters:
                 - sigma_min: smallest sigma
                 - sigma_max: largest sigma
                 - N: number of discretization steps
         """
-        # 从配置中获取参数
+        # Get parameters from config
         sigma_min = config.get('sigma_min', 0.01)
         sigma_max = config.get('sigma_max', 2.0)
         N = config.get('N', 1000)
@@ -170,34 +170,34 @@ class VESDE(SDE):
 
 class VPSDE(SDE):
     def __init__(self, config):
-        """构造VPSDE
+        """Construct VPSDE
 
         Args:
-            config: 配置对象，包含以下参数：
-                - beta_min: beta(0)的值，默认0.1
-                - beta_max: beta(1)的值，默认20.0
-                - num_scales: 离散化步数 (对应 SDE 的 N)
+            config: Configuration object containing the following parameters:
+                - beta_min: value of beta(0), default 0.1
+                - beta_max: value of beta(1), default 20.0
+                - num_scales: discretization steps (corresponds to SDE's N)
         """
-        # --- 从传入的 config 对象读取参数 ---
-        beta_min = config.beta_min # 直接访问属性
-        beta_max = config.beta_max # 直接访问属性
-        N = config.num_scales      # 使用 num_scales 作为 N
+        # --- Read parameters from passed config object ---
+        beta_min = config.beta_min # Direct attribute access
+        beta_max = config.beta_max # Direct attribute access
+        N = config.num_scales      # Use num_scales as N
 
         super().__init__(N)
 
         self.beta_0 = beta_min
         self.beta_1 = beta_max
         self.N = N
-        self.config = config # 存储完整的配置对象
+        self.config = config # Store complete config object
 
-        # 重新计算离散化序列
+        # Recalculate discretization sequences
         self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)
         self.alphas = 1. - self.discrete_betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_1m_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
 
-        # 添加数值稳定性参数
+        # Numerical stability parameters
         self.stability_eps = 1e-8
 
     @property
@@ -205,11 +205,11 @@ class VPSDE(SDE):
         return 1
 
     def sde(self, x, t):
-        """计算SDE的漂移和扩散系数
+        """Compute SDE drift and diffusion coefficients
         
         Args:
-            x: 输入张量
-            t: 时间步，范围[0,1]
+            x: Input tensor
+            t: Timestep, range [0,1]
         """
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         drift = -0.5 * beta_t[:, None, None, None] * x
@@ -217,15 +217,15 @@ class VPSDE(SDE):
         return drift, diffusion
 
     def marginal_prob(self, x, t):
-        """计算边缘概率分布的参数
+        """Compute marginal probability distribution parameters
         
         Args:
-            x: 输入张量
-            t: 时间步
+            x: Input tensor
+            t: Timestep
         """
         log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
         
-        # 根据输入维度调整系数形状
+        # Adjust coefficient shape based on input dimensions
         if len(x.shape) == 4:  # [B,C,H,W]
             mean = torch.exp(log_mean_coeff[:, None, None, None]) * x
         elif len(x.shape) == 5:  # [B,T,C,H,W]
@@ -237,15 +237,15 @@ class VPSDE(SDE):
         return mean, std
 
     def prior_sampling(self, shape):
-        """从先验分布采样
+        """Sample from prior distribution
         
         Args:
-            shape: 采样形状
+            shape: Sampling shape
         """
         return torch.randn(*shape)
 
     def prior_logp(self, z):
-        """计算先验分布的对数概率密度"""
+        """Compute log probability density of prior distribution"""
         shape = z.shape
         N = np.prod(shape[1:])
         logp = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.

@@ -51,7 +51,7 @@ class HybridBathymetrySystem:
             logger.info(f"System initialization completed, using device: {self.device}")
             
         except Exception as e:
-            logger.error(f"系统初始化失败: {str(e)}")
+            logger.error(f"System initialization failed: {str(e)}")
             raise
             
     def _preprocess_data(
@@ -61,9 +61,9 @@ class HybridBathymetrySystem:
         sparse_measurements: np.ndarray,
         measurement_coordinates: np.ndarray
     ) -> Dict[str, Any]:
-        """数据预处理"""
+        """Data preprocessing"""
         try:
-            # 验证输入数据
+            # Validate input data
             validate_data(
                 sentinel_data, 
                 gebco_data,
@@ -71,7 +71,7 @@ class HybridBathymetrySystem:
                 measurement_coordinates
             )
             
-            # 使用预处理器处理数据
+            # Use preprocessor to process data
             processed_data = self.preprocessor.process(
                 sentinel_data=sentinel_data,
                 gebco_data=gebco_data,
@@ -80,11 +80,11 @@ class HybridBathymetrySystem:
                 is_ee_image=False
             )
             
-            logger.info("数据预处理完成")
+            logger.info("Data preprocessing completed")
             return processed_data
             
         except Exception as e:
-            logger.error(f"数据预处理失败: {str(e)}")
+            logger.error(f"Data preprocessing failed: {str(e)}")
             raise
             
     def process(
@@ -96,9 +96,9 @@ class HybridBathymetrySystem:
         target_years: Optional[List[int]] = None,
         is_ee_image: bool = False
     ) -> Dict[str, np.ndarray]:
-        """处理输入数据并生成预测结果"""
+        """Process input data and generate prediction results"""
         try:
-            # 1. 预处理数据
+            # 1. Preprocess data
             processed_data = self._preprocess_data(
                 sentinel_data,
                 gebco_data,
@@ -106,23 +106,23 @@ class HybridBathymetrySystem:
                 measurement_coordinates
             )
             
-            # 2. 使用经典模型进行预测
+            # 2. Use classic model for prediction
             classic_results = self.classic_models.predict(processed_data['sentinel'], 'rf')
             
-            # 3. 标准化经典模型预测结果
+            # 3. Normalize classic model prediction results
             normalized_classic, classic_stats = self.preprocessor._normalize_data(
                 classic_results,
                 data_type='classic'
             )
             
-            # 记录数据标准化前后的范围
-            logger.info("数据标准化前后的范围:")
-            logger.info(f"GEBCO数据 - 原始范围: [{np.nanmin(gebco_data):.2f}, {np.nanmax(gebco_data):.2f}]")
-            logger.info(f"GEBCO数据 - 标准化后: [{np.nanmin(processed_data['gebco']):.2f}, {np.nanmax(processed_data['gebco']):.2f}]")
-            logger.info(f"经典模型预测 - 原始范围: [{np.nanmin(classic_results):.2f}, {np.nanmax(classic_results):.2f}]")
-            logger.info(f"经典模型预测 - 标准化后: [{np.nanmin(normalized_classic):.2f}, {np.nanmax(normalized_classic):.2f}]")
+            # Log data range before and after normalization
+            logger.info("Data range before and after normalization:")
+            logger.info(f"GEBCO data - original range: [{np.nanmin(gebco_data):.2f}, {np.nanmax(gebco_data):.2f}]")
+            logger.info(f"GEBCO data - after normalization: [{np.nanmin(processed_data['gebco']):.2f}, {np.nanmax(processed_data['gebco']):.2f}]")
+            logger.info(f"Classic model prediction - original range: [{np.nanmin(classic_results):.2f}, {np.nanmax(classic_results):.2f}]")
+            logger.info(f"Classic model prediction - after normalization: [{np.nanmin(normalized_classic):.2f}, {np.nanmax(normalized_classic):.2f}]")
             
-            # 4. 准备S3GM输入数据
+            # 4. Prepare S3GM input data
             s3gm_input = {
                 'sentinel-classic': normalized_classic,
                 'gebco': processed_data['gebco'],
@@ -137,7 +137,7 @@ class HybridBathymetrySystem:
                 }
             }
             
-            # 5. 执行S3GM预测
+            # 5. Execute S3GM prediction
             s3gm_output = self.s3gm.predict(s3gm_input)
             
             return {
@@ -146,7 +146,7 @@ class HybridBathymetrySystem:
             }
             
         except Exception as e:
-            logger.error(f"处理失败: {str(e)}")
+            logger.error(f"Processing failed: {str(e)}")
             raise
             
     def validate(
@@ -156,20 +156,20 @@ class HybridBathymetrySystem:
         validation_coordinates: np.ndarray
     ) -> Dict[str, float]:
         """
-        验证预测结果
+        Validate prediction results
         
         Args:
-            results: 预测结果
-            validation_data: 验证数据
-            validation_coordinates: 验证点坐标
+            results: Prediction results
+            validation_data: Validation data
+            validation_coordinates: Validation point coordinates
             
         Returns:
-            验证指标字典
+            Dictionary of validation metrics
         """
         try:
             metrics = {}
             
-            # 计算各个模型结果的指标
+            # Calculate metrics for each model result
             for model_name, result in results.items():
                 model_metrics = self._calculate_metrics(
                     predictions=result,
@@ -181,7 +181,7 @@ class HybridBathymetrySystem:
             return metrics
             
         except Exception as e:
-            logger.error(f"结果验证失败: {str(e)}")
+            logger.error(f"Result validation failed: {str(e)}")
             raise
             
     def _calculate_metrics(
@@ -190,12 +190,12 @@ class HybridBathymetrySystem:
         ground_truth: np.ndarray,
         coordinates: np.ndarray
     ) -> Dict[str, float]:
-        """计算评估指标"""
+        """Calculate evaluation metrics"""
         try:
-            # 在验证点位置提取预测值
+            # Extract prediction values at validation point locations
             pred_values = self._extract_values_at_coordinates(predictions, coordinates)
             
-            # 计算指标
+            # Calculate metrics
             metrics = {
                 'rmse': np.sqrt(np.mean((pred_values - ground_truth) ** 2)),
                 'mae': np.mean(np.abs(pred_values - ground_truth)),
@@ -206,7 +206,7 @@ class HybridBathymetrySystem:
             return metrics
             
         except Exception as e:
-            logger.error(f"指标计算失败: {str(e)}")
+            logger.error(f"Metrics calculation failed: {str(e)}")
             raise
             
     def _extract_values_at_coordinates(
@@ -214,16 +214,16 @@ class HybridBathymetrySystem:
         data: np.ndarray,
         coordinates: np.ndarray
     ) -> np.ndarray:
-        """在指定坐标位置提取值"""
+        """Extract values at specified coordinate locations"""
         try:
             values = np.zeros(len(coordinates))
             
             for i, (y, x) in enumerate(coordinates):
-                # 确保坐标为整数
+                # Ensure coordinates are integers
                 y_idx = int(round(y))
                 x_idx = int(round(x))
                 
-                # 边界检查
+                # Boundary check
                 y_idx = np.clip(y_idx, 0, data.shape[0] - 1)
                 x_idx = np.clip(x_idx, 0, data.shape[1] - 1)
                 
@@ -232,24 +232,24 @@ class HybridBathymetrySystem:
             return values
             
         except Exception as e:
-            logger.error(f"坐标值提取失败: {str(e)}")
+            logger.error(f"Coordinate value extraction failed: {str(e)}")
             raise
             
     def cleanup(self):
-        """清理资源"""
+        """Clean up resources"""
         try:
-            # 清理GPU内存
+            # Clean up GPU memory
             if torch.cuda.is_available():
                 GPUMemoryManager.clear_gpu_memory()
                 
-            logger.info("系统资源清理完成")
+            logger.info("System resource cleanup completed")
             
         except Exception as e:
-            logger.error(f"资源清理失败: {str(e)}")
+            logger.error(f"Resource cleanup failed: {str(e)}")
             raise
             
     def set_classic_models(self, classic_models):
-        """设置经典模型"""
+        """Set classic models"""
         self.classic_models = classic_models
-        self.s3gm.set_classic_models(classic_models)  # 同时更新S3GM包装器中的经典模型
-        logger.info("经典模型已设置")
+        self.s3gm.set_classic_models(classic_models)  # Also update classic models in S3GM wrapper
+        logger.info("Classic models set")

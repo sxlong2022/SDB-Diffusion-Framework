@@ -30,41 +30,41 @@ def sample_noise(shape, channel_modal, device='cpu', dtype=torch.float32):
 
 def predict_fn(net, sde, x, t, continuous=True):
     """
-    增强版预测函数，处理输入范围并稳定计算
+    Enhanced prediction function, handles input range and stabilizes computation
     """
     if continuous:
-        # 使用SDE的marginal_prob获取标准差作为标签
+        # Use SDE's marginal_prob to get standard deviation as labels
         _, labels = sde.marginal_prob(torch.zeros_like(x), t)
     else:
-        # 使用离散时间步作为标签
+        # Use discrete timestep as labels
         labels = sde.T - t
         labels *= sde.N - 1
         labels = torch.round(labels).long()
     
-    # 增加数值稳定性检查 (输入)
+    # Add numerical stability check (input)
     if torch.isnan(x).any() or torch.isinf(x).any():
-        print(f"警告: predict_fn输入包含NaN或Inf值")
-        x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0) # 限制范围
+        print(f"Warning: predict_fn input contains NaN or Inf values")
+        x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0) # Limit range
     
-    # 调用模型获取分数
-    # 确保标签类型与模型期望一致 (通常是float)
+    # Call model to get score
+    # Ensure label type matches model expectation (usually float)
     if isinstance(labels, torch.Tensor):
         labels = labels.float()
         
-    score = net(x, labels) # 确保标签传递正确
+    score = net(x, labels) # Ensure labels are passed correctly
     
-    # 增加后处理以增强稳定性 (输出)
+    # Add post-processing for stability (output)
     if torch.isnan(score).any() or torch.isinf(score).any():
-        print(f"警告: predict_fn输出包含NaN或Inf值")
-        score = torch.nan_to_num(score, nan=0.0, posinf=10.0, neginf=-10.0) # 先处理NaN/Inf
+        print(f"Warning: predict_fn output contains NaN or Inf values")
+        score = torch.nan_to_num(score, nan=0.0, posinf=10.0, neginf=-10.0) # Handle NaN/Inf first
     
-    # 使用 torch.clamp 直接限制分数范围，例如限制在[-20, 20]
+    # Use torch.clamp to directly limit score range, e.g., limit to [-20, 20]
     score_clamp_range = 20.0
     score = torch.clamp(score, min=-score_clamp_range, max=score_clamp_range)
     
-    # 可以在这里添加日志，查看clamp后的分数范围
+    # Can add logging here to check clamped score range
     # score_min, score_max = score.min().item(), score.max().item()
-    # if i % 25 == 0: # 假设i是可用的循环变量
+    # if i % 25 == 0: # Assuming i is an available loop variable
     #    print(f"Debug: Clamped score range [{score_min:.4f}, {score_max:.4f}]")
 
     return score

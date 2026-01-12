@@ -508,7 +508,7 @@ class UNetVideoModel(nn.Module):
             zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
         )
 
-        # 添加条件引导层
+        # Add conditional guidance layer
         self.condition_guide = nn.Sequential(
             conv_nd(dims, self.in_channels-1, model_channels, 3, padding=1),
             MixedRangeActivation() if use_mixed_activation else SiLU(),
@@ -555,131 +555,131 @@ class UNetVideoModel(nn.Module):
             B, T, C, H = x.shape
         timesteps = timesteps.view(B, 1).expand(B, T)
         
-        # 检查输入维度并提供默认值
+        # Check input dimensions and provide default values
         if obs_mask is None:
-            # obs_mask = th.zeros_like(x[:, :, :1]) # 这可能导致维度不匹配，如果x是5D
+            # obs_mask = th.zeros_like(x[:, :, :1]) # This may cause dimension mismatch if x is 5D
              obs_mask = th.zeros((B, T, 1) + x.shape[3:], device=x.device, dtype=x.dtype)
         if latent_mask is None:
             # latent_mask = th.zeros_like(x[:, :, :1])
              latent_mask = th.zeros((B, T, 1) + x.shape[3:], device=x.device, dtype=x.dtype)
         
-        # 计算 attn_mask
+        # Compute attn_mask
         attn_mask = (obs_mask + latent_mask).clip(max=1)
 
-        # 创建观测点指示器
+        # Create observation point indicator
         indicator_template = th.ones_like(x[:, :, :1, :, :]) if len(x.shape) == 5 else th.ones_like(x[:, :, :1, :])
         obs_indicator = indicator_template * obs_mask
         
-        # 简化 cat 操作，避免维度问题
+        # Simplify cat operation to avoid dimension issues
         combined_x = th.cat([
-            x*(1-obs_mask) + x0*obs_mask,  # 主通道（观测点用x0替换）
-            obs_indicator                  # 观测点指示器
+            x*(1-obs_mask) + x0*obs_mask,  # Main channels (replace observation points with x0)
+            obs_indicator                  # Observation point indicator
         ], dim=2) # Shape: [B, T, C+1, H, W]
         
-        # 记录实际输入通道数，以便后续处理
+        # Record actual input channel count for subsequent processing
         actual_channels = combined_x.shape[2]
         if actual_channels != self.in_channels:
-             # 允许 actual_channels 比 self.in_channels 少1（因为条件引导层输入是 in_channels-1）
-             # 或者等于 self.in_channels (因为我们拼接了 obs_indicator)
-             # 这里逻辑调整为检查是否为 C+1
-             expected_combined_channels = self.in_channels # self.in_channels 是定义时的 C+1
+             # Allow actual_channels to be 1 less than self.in_channels (because condition guide layer input is in_channels-1)
+             # Or equal to self.in_channels (because we concatenated obs_indicator)
+             # Logic adjusted here to check if it's C+1
+             expected_combined_channels = self.in_channels # self.in_channels is C+1 as defined
              if actual_channels != expected_combined_channels:
-                  print(f"警告: combined_x 通道数 ({actual_channels}) 与模型预期 ({expected_combined_channels}) 不匹配")
+                  print(f"Warning: combined_x channel count ({actual_channels}) does not match model expectation ({expected_combined_channels})")
 
-        # --- 使用 .view() 进行 Reshape ---
+        # --- Use .view() for Reshape ---
         reshaped_combined_x = combined_x.view(B*T, actual_channels, *combined_x.shape[3:]) # Shape: [B*T, C+1, H, W]
 
-        # 使用输入适配器处理输入
-        # 确保适配器接收和返回4D张量
+        # Use input adapter to process input
+        # Ensure adapter receives and returns 4D tensor
         adapted_x, land_mask = self.input_adapter(reshaped_combined_x) # adapted_x Shape: [B*T, C+1, H, W]
         
         timesteps = timesteps.reshape(B*T)
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels)) # Shape: [B*T, emb_dim]
         
-        # --- 确认 h 是 4D ---
+        # --- Confirm h is 4D ---
         h = adapted_x.type(adapted_x.dtype) # Shape: [B*T, C+1, H, W]
         
         attns = {'spatial': [], 'temporal': [], 'mixed': []} if return_attn_weights else None
         
-        # 以下代码处理前向传播
+        # The following code handles forward propagation
         for layer, module in enumerate(self.input_blocks):
-            # --- 确认传入模块的 h 是 4D ---
+            # --- Confirm h passed to module is 4D ---
             if len(h.shape) != 4:
-                 print(f"警告: 传递给 input_block {layer} 的张量 h 不是4D，形状为 {h.shape}")
+                 print(f"Warning: tensor h passed to input_block {layer} is not 4D, shape is {h.shape}")
             h = module(h, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
             hs.append(h)
         
-        # --- 确认 middle_block 输入是 4D ---
+        # --- Confirm middle_block input is 4D ---
         if len(h.shape) != 4:
-            print(f"警告: 传递给 middle_block 的张量 h 不是4D，形状为 {h.shape}")
+            print(f"Warning: tensor h passed to middle_block is not 4D, shape is {h.shape}")
         h = self.middle_block(h, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
         
-        # 应用条件引导，但确保维度匹配
+        # Apply conditional guidance, but ensure dimension matching
         try:
-            # --- 确认 h 在条件引导前是 4D ---
+            # --- Confirm h is 4D before conditional guidance ---
             if len(h.shape) != 4:
-                 print(f"警告: 条件引导前的张量 h 不是4D，形状为 {h.shape}")
+                 print(f"Warning: tensor h before conditional guidance is not 4D, shape is {h.shape}")
 
-            # 重塑x0和obs_mask以匹配h的维度
-            reshaped_x0 = x0.reshape(B*T, C, *x0.shape[3:]) # x0原始通道数为C
-            reshaped_mask = obs_mask.reshape(B*T, 1, *obs_mask.shape[3:]) # mask通道数为1
+            # Reshape x0 and obs_mask to match h dimensions
+            reshaped_x0 = x0.reshape(B*T, C, *x0.shape[3:]) # x0 original channel count is C
+            reshaped_mask = obs_mask.reshape(B*T, 1, *obs_mask.shape[3:]) # mask channel count is 1
 
-            # 准备条件引导的输入 (通道数为 C)
+            # Prepare conditional guidance input (channel count is C)
             condition_input = reshaped_x0
 
-             # --- 确认条件引导输入是 4D ---
+             # --- Confirm conditional guidance input is 4D ---
             if len(condition_input.shape) != 4:
-                 print(f"警告: 传递给 condition_guide 的张量不是4D，形状为 {condition_input.shape}")
+                 print(f"Warning: tensor passed to condition_guide is not 4D, shape is {condition_input.shape}")
 
 
-            # 应用条件引导
-            if condition_input.shape[2:] == h.shape[2:]:  # 确保空间维度匹配
-                # 注意：condition_guide 输入通道是 self.in_channels-1 = C
-                condition_feature = self.condition_guide(condition_input) # 输出通道是 model_channels
+            # Apply conditional guidance
+            if condition_input.shape[2:] == h.shape[2:]:  # Ensure spatial dimensions match
+                # Note: condition_guide input channels is self.in_channels-1 = C
+                condition_feature = self.condition_guide(condition_input) # Output channels is model_channels
 
-                 # --- 确认条件引导输出和 h 的形状 ---
+                 # --- Confirm conditional guidance output and h shapes ---
                 if len(condition_feature.shape) != 4:
-                    print(f"警告: condition_guide 输出不是4D，形状为 {condition_feature.shape}")
-                if condition_feature.shape[1] != h.shape[1]: # 检查通道数是否匹配
-                    print(f"警告: condition_guide 输出通道 ({condition_feature.shape[1]}) 与 h 通道 ({h.shape[1]}) 不匹配")
+                    print(f"Warning: condition_guide output is not 4D, shape is {condition_feature.shape}")
+                if condition_feature.shape[1] != h.shape[1]: # Check if channel counts match
+                    print(f"Warning: condition_guide output channels ({condition_feature.shape[1]}) does not match h channels ({h.shape[1]})")
 
 
-                if condition_feature.shape == h.shape:  # 最后检查确保完全匹配
-                    h = h + condition_feature * reshaped_mask # 使用mask应用引导
+                if condition_feature.shape == h.shape:  # Final check to ensure complete match
+                    h = h + condition_feature * reshaped_mask # Apply guidance using mask
                 else:
-                     # 如果形状不匹配，可能需要调整 condition_guide 的输出通道或 h 的通道
-                     print(f"跳过条件引导：形状不匹配 - guide: {condition_feature.shape}, h: {h.shape}")
+                     # If shapes don't match, may need to adjust condition_guide output channels or h channels
+                     print(f"Skipping conditional guidance: shape mismatch - guide: {condition_feature.shape}, h: {h.shape}")
 
         except Exception as e:
-            print(f"条件引导层应用失败: {e}")
-            # 跳过条件引导，继续处理
+            print(f"Conditional guidance layer application failed: {e}")
+            # Skip conditional guidance, continue processing
         
-        # 继续解码器部分
+        # Continue decoder part
         for module in self.output_blocks:
-             # --- 确认解码器输入是 4D ---
+             # --- Confirm decoder input is 4D ---
              pop_h = hs.pop()
              if len(h.shape) != 4 or len(pop_h.shape) != 4:
-                  print(f"警告: 传递给 output_block 的张量不是4D - h: {h.shape}, pop_h: {pop_h.shape}")
+                  print(f"Warning: tensor passed to output_block is not 4D - h: {h.shape}, pop_h: {pop_h.shape}")
              
-             # --- 修改这里的通道数检查 ---
-             # module[0] 是一个 ResBlock 实例
-             # ResBlock 的输入通道数由 ch + input_block_chans.pop() 决定，
-             # 并且 ResBlock 的第一个卷积层输入通道数就是 ResBlock 的输入通道数 self.channels。
-             # 因此，我们可以直接使用 module[0].channels 来检查输入 ResBlock 的通道数。
-             # cat_in 的通道数是 h.shape[1] + pop_h.shape[1]
-             # module[0].channels 是 ResBlock 期望的输入通道数
+             # --- Modify channel count check here ---
+             # module[0] is a ResBlock instance
+             # ResBlock input channel count is determined by ch + input_block_chans.pop(),
+             # and ResBlock's first conv layer input channel count is ResBlock's input channel count self.channels.
+             # Therefore, we can directly use module[0].channels to check ResBlock input channel count.
+             # cat_in channel count is h.shape[1] + pop_h.shape[1]
+             # module[0].channels is the expected input channel count for ResBlock
              expected_input_channels = module[0].channels 
              actual_input_channels = h.shape[1] + pop_h.shape[1]
              if actual_input_channels != expected_input_channels: 
-                  print(f"警告: output_block 输入通道数 ({actual_input_channels}) 与 ResBlock 期望 ({expected_input_channels}) 不匹配")
+                  print(f"Warning: output_block input channel count ({actual_input_channels}) does not match ResBlock expectation ({expected_input_channels})")
 
              cat_in = th.cat([h, pop_h], dim=1)
              h = module(cat_in, emb, attn_mask, T=T, attn_weights_list=attns, frame_indices=frame_indices)
         
         h = h.type(adapted_x.dtype)
         out = self.out(h)
-        # --- 确保输出是 5D ---
+        # --- Ensure output is 5D ---
         final_out = out.view(B, T, self.out_channels, *adapted_x.shape[2:])
         return final_out, attns
 

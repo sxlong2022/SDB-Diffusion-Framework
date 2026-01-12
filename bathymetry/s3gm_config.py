@@ -141,12 +141,12 @@ class S3GMConfig:
     })
 
     def __post_init__(self):
-        # 类型和结构修正
+        # Type and structure correction
         if isinstance(self.attention_resolutions, list):
             self.attention_resolutions = tuple(self.attention_resolutions)
         if isinstance(self.channel_mult, list):
             self.channel_mult = tuple(self.channel_mult)
-        # 其他一致性检查
+        # Other consistency checks
         assert self.num_components > 0
         assert self.image_size > 0
         assert self.num_frames > 0

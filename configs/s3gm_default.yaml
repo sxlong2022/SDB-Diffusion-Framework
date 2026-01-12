@@ -1,12 +1,12 @@
-# 模型基本参数
-num_components: 5  # 1(经典) + 1(GEBCO) + 2(海图) + 1(掩码)
+# Basic model parameters
+num_components: 5  # 1(classic) + 1(GEBCO) + 2(chart) + 1(mask)
 image_size: 64
 num_frames: 6     # 2018-2023
 version: "bathymetry_v0"
 data: "bathymetry"
 parameterization: "v"
 
-# 模型架构参数
+# Model architecture parameters
 model_channels: 128
 num_res_blocks: 4
 attention_resolutions: [4, 8, 16]
@@ -17,23 +17,23 @@ num_heads: 8
 use_checkpoint: true
 use_scale_shift_norm: true
 
-# 通道模态配置
-channel_modal: [1, 1, 2, 1]  # [经典模型, GEBCO, 海图(深度+掩码), 统一掩码]
+# Channel modal configuration
+channel_modal: [1, 1, 2, 1]  # [classic model, GEBCO, chart(depth+mask), unified mask]
 num_modals: 1
 
-# SDE配置
-sde_type: 'vpsde'  # 指定使用VPSDE
+# SDE configuration
+sde_type: 'vpsde'  # Specify using VPSDE
 beta_min: 0.1
 beta_max: 1000
 num_scales: 1000
 
-# 扩散模型参数
+# Diffusion model parameters
 ema_rate: 0.999
 predictor: reverse_diffusion
 corrector: langevin
 probability_flow: true
 
-# 采样参数
+# Sampling parameters
 sampling:
   alpha: 0.1
   gamma1: 0 
@@ -45,16 +45,16 @@ sampling:
   num_steps: 3 
   overlap: 2
 
-# RPE相关参数
+# RPE related parameters
 beta: 32
 use_rpe_net: true
 time_embed_dim: 256
 
-# 时序处理参数
+# Temporal processing parameters
 time_decay: 0.12
 spatial_decay: 0.05
 
-# 性能优化参数
+# Performance optimization parameters
 use_fp16: true
 use_amp: true
 memory_efficient: true
@@ -63,30 +63,30 @@ use_reentrant: false
 batch_size_override: 1
 requires_grad: true
 
-# EMA相关参数
+# EMA related parameters
 use_ema: true
 ema_decay: 0.9999
 
-# VESDE参数
+# VESDE parameters
 sigma_min: 0.002
 sigma_max: 10
 
-# 数值稳定性参数
+# Numerical stability parameters
 eps: 1.0e-12
 
-# 采样参数
+# Sampling parameters
 num_samples: 1
 num_samples_train: 1000
 num_samples_val: 1000
 train_split: 0.9
 
-# 数据处理参数
+# Data processing parameters
 land_value: 1.5
 
-# 物理约束参数
+# Physics constraint parameters
 physics_guide: false
 
-# 稳定性参数
+# Stability parameters
 stability:
   grad_clip: 100.0
   check_grad_interval: 5
@@ -96,21 +96,21 @@ stability:
   score_clamp_range: 20.0
   gradient_clip_dps: 10.0
 
-# 裁剪参数
+# Clipping parameters
 clipping:
   use_dynamic: true
   percentile_range: [1, 99]
   expansion_factor: 1.2
   land_threshold: 0.1
 
-# 权重参数
+# Weight parameters
 weights:
   spatial_min: 0.3
   spatial_max: 1.0
   temporal_min: 0.2
   temporal_max: 1.0
 
-# 范围适配配置
+# Range adaptation configuration
 range_adaptation:
   enabled: true
   use_mixed_activation: true
@@ -119,7 +119,7 @@ range_adaptation:
   init_shift: 0.0
   attention_scale_factor: 0.8
 
-# 输入通道权重
+# Input channel weights
 input_weights:
   classic: 0.7
   gebco: 0.3

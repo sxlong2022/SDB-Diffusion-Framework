@@ -11,10 +11,10 @@ from sklearn.model_selection import KFold
 logger = logging.getLogger(__name__)
 
 class ClassicModels:
-    """经典水深反演模型"""
+    """Classic bathymetry inversion models"""
     
     def __init__(self, config_path: str = 'configs/classic_models.yaml'):
-        """初始化经典水深反演模型"""
+        """Initialize classic bathymetry inversion models"""
         self.config_path = Path(config_path)
         self.load_config()
         self.llm_model = LinearRegression()
@@ -27,21 +27,21 @@ class ClassicModels:
         )
     
     def load_config(self) -> None:
-        """加载配置文件"""
+        """Load configuration file"""
         try:
             if not self.config_path.exists():
-                logger.warning(f"配置文件 {self.config_path} 不存在，使用默认参数")
+                logger.warning(f"Config file {self.config_path} does not exist, using default parameters")
                 self._set_default_params()
                 return
                 
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
             
-            # 获取RF模型参数
+            # Get RF model parameters
             rf_config = config.get('rf_params', {})
             model_params = rf_config.get('model_params', {})
             
-            # 更新RF模型参数
+            # Update RF model parameters
             self.rf_model = RandomForestRegressor(
                 n_estimators=model_params.get('n_estimators', 500),
                 max_depth=model_params.get('max_depth', 25),
@@ -54,30 +54,30 @@ class ClassicModels:
                 oob_score=model_params.get('oob_score', True)
             )
             
-            # 保存特征工程参数
+            # Save feature engineering parameters
             self.rf_params = {
                 'feature_engineering': rf_config.get('feature_engineering', {
                     'normalization': {'use_standard_scaling': True},
                     'band_ratio': {'use_log_transform': True},
                     'depth_index': {'use_normalized_bands': True}
                 }),
-                'stats': {},  # 将在训练时更新
-                'feature_importances': {}  # 将在训练时更新
+                'stats': {},  # Will be updated during training
+                'feature_importances': {}  # Will be updated during training
             }
             
         except Exception as e:
-            logger.error(f"加载配置文件失败: {str(e)}")
+            logger.error(f"Failed to load config file: {str(e)}")
             self._set_default_params()
     
     def _set_default_params(self) -> None:
-        """设置默认参数"""
+        """Set default parameters"""
         self.llm_params = {}
         self.rf_params = {}
 
     def train_rf(self, blue_band: np.ndarray, green_band: np.ndarray, depth: np.ndarray) -> float:
-        """训练随机森林模型"""
+        """Train Random Forest model"""
         try:
-            # 1. 数据验证
+            # 1. Data validation
             valid_mask = np.logical_and.reduce((
                 ~np.isnan(blue_band),
                 ~np.isnan(green_band),
@@ -88,21 +88,21 @@ class ClassicModels:
                 depth <= 75.0
             ))
         
-            # 2. 增强特征工程
-            # 2.1 基础特征（标准化）
+            # 2. Enhanced feature engineering
+            # 2.1 Basic features (standardized)
             blue_norm = (blue_band - np.mean(blue_band[valid_mask])) / np.std(blue_band[valid_mask])
             green_norm = (green_band - np.mean(green_band[valid_mask])) / np.std(green_band[valid_mask])
         
-            # 2.2 波段比值特征
+            # 2.2 Band ratio features
             band_ratio = np.log(blue_band / green_band)
             band_ratio_norm = (band_ratio - np.mean(band_ratio[valid_mask])) / np.std(band_ratio[valid_mask])
         
-            # 2.3 对数变换特征
+            # 2.3 Log-transformed features
             log_blue = np.log(blue_band)
             log_green = np.log(green_band)
             log_ratio = log_blue - log_green
         
-            # 2.4 深度相关特征
+            # 2.4 Depth-related features
             depth_index = (blue_norm - green_norm) / (blue_norm + green_norm)
         
             X = np.column_stack((
@@ -118,24 +118,24 @@ class ClassicModels:
                             'log_green', 'log_ratio', 'depth_index']
             y = depth[valid_mask]
         
-            # 3. 优化模型参数
+            # 3. Optimized model parameters
             self.rf_model = RandomForestRegressor(
-                n_estimators=500,  # 增加树的数量
-                max_depth=25,      # 适当增加深度
+                n_estimators=500,  # Increase number of trees
+                max_depth=25,      # Appropriately increase depth
                 min_samples_split=2,
                 min_samples_leaf=1,
                 max_features='sqrt',
                 bootstrap=True,
                 random_state=42,
                 n_jobs=-1,
-                oob_score=True     # 启用袋外评分
+                oob_score=True     # Enable out-of-bag scoring
             )
         
-            # 4. 训练模型
+            # 4. Train model
             self.rf_model.fit(X, y)
             r2 = self.rf_model.score(X, y)
         
-            # 5. 保存特征重要性和统计信息
+            # 5. Save feature importances and statistics
             importances = dict(zip(feature_names, self.rf_model.feature_importances_))
             self.rf_params = {
                 'stats': {
@@ -150,7 +150,7 @@ class ClassicModels:
                 'oob_score': float(self.rf_model.oob_score_)
             }
         
-            # 6. 记录训练信息
+            # 6. Log training information
             logger.info(f"Training depth range: [{np.min(y):.2f}, {np.max(y):.2f}] m")
             logger.info(f"Blue band range: [{np.min(blue_band[valid_mask]):.2f}, {np.max(blue_band[valid_mask]):.2f}]")
             logger.info(f"Green band range: [{np.min(green_band[valid_mask]):.2f}, {np.max(green_band[valid_mask]):.2f}]")
@@ -166,32 +166,32 @@ class ClassicModels:
             raise
 
     def predict_rf(self, blue_band: np.ndarray, green_band: np.ndarray) -> np.ndarray:
-        """随机森林模型预测"""
+        """Random Forest model prediction"""
         try:
-            # 获取参数和统计信息
+            # Get parameters and statistics
             stats = self.rf_params['stats']
         
-            # 1. 特征工程
-            # 1.1 基础特征（标准化）
+            # 1. Feature engineering
+            # 1.1 Basic features (standardized)
             blue_norm = (blue_band - stats['blue_mean']) / stats['blue_std']
             green_norm = (green_band - stats['green_mean']) / stats['green_std']
         
-            # 1.2 波段比值特征
+            # 1.2 Band ratio features
             band_ratio = np.log(blue_band / green_band)
             band_ratio_norm = (band_ratio - stats['band_ratio_mean']) / stats['band_ratio_std']
         
-            # 1.3 对数变换特征
+            # 1.3 Log-transformed features
             log_blue = np.log(blue_band)
             log_green = np.log(green_band)
             log_ratio = log_blue - log_green
         
-            # 1.4 深度相关特征
+            # 1.4 Depth-related features
             depth_index = (blue_norm - green_norm) / (blue_norm + green_norm)
         
             H, W = blue_band.shape
             predictions = np.zeros((H, W))
            
-            # 2. 数据验证
+            # 2. Data validation
             valid_mask = np.logical_and.reduce((
                 ~np.isnan(blue_band),
                 ~np.isnan(green_band),
@@ -200,7 +200,7 @@ class ClassicModels:
             ))
         
             if np.any(valid_mask):
-                # 3. 构建特征矩阵
+                # 3. Build feature matrix
                 X = np.column_stack((
                     blue_norm[valid_mask],
                     green_norm[valid_mask],
@@ -211,17 +211,17 @@ class ClassicModels:
                     depth_index[valid_mask]
                 ))
             
-                # 4. 模型预测
+                # 4. Model prediction
                 pred = self.rf_model.predict(X)
             
-                # 5. 将预测结果填回原始形状
+                # 5. Fill predictions back to original shape
                 predictions[valid_mask] = pred
             
-                # 6. 应用深度范围限制
-                predictions[predictions < 0.1] = 0  # 最小深度限制
-                predictions[predictions > 75.0] = 75.0  # 最大深度限制
+                # 6. Apply depth range limits
+                predictions[predictions < 0.1] = 0  # Minimum depth limit
+                predictions[predictions > 75.0] = 75.0  # Maximum depth limit
             
-                # 7. 陆地掩膜
+                # 7. Land mask
                 land_mask = ~valid_mask
                 predictions[land_mask] = 0
         
@@ -232,7 +232,7 @@ class ClassicModels:
             raise
 
     def predict(self, sentinel_data: Dict[str, np.ndarray], method: str = 'llm') -> np.ndarray:
-        """预测水深"""
+        """Predict water depth"""
         try:
             blue = sentinel_data['blue']   
             green = sentinel_data['green'] 
@@ -246,10 +246,10 @@ class ClassicModels:
                 elif method.lower() == 'rf':
                     predictions[t] = self.predict_rf(blue[t], green[t])
                 else:
-                    raise ValueError(f"不支持的方法: {method}")
+                    raise ValueError(f"Unsupported method: {method}")
             
             return predictions[:, np.newaxis, :, :]
             
         except Exception as e:
-            logger.error(f"经典模型预测失败: {str(e)}")
+            logger.error(f"Classic model prediction failed: {str(e)}")
             raise
