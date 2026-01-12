@@ -11,34 +11,19 @@ dependencies:
   # PyTorch with CUDA
   - pytorch>=2.0.1
   - pytorch-cuda=12.4
-  - torchvision
-  - torchaudio
   
   # Scientific computing
   - numpy>=1.24
   - scipy>=1.13
-  - pandas>=2.0
   
   # Machine learning
   - scikit-learn>=1.6
-  - scikit-image>=0.24
-  - xgboost
   
-  # Geospatial
-  - gdal>=3.10
-  - rasterio
-  - geopandas>=1.0
-  - cartopy>=0.23
-  - pyproj>=3.6
-  - shapely>=2.0
-  
-  # NetCDF/HDF support
+  # NetCDF support (for GEBCO data)
   - netcdf4>=1.7
-  - h5py>=3.12
   
   # Visualization
   - matplotlib>=3.7
-  - folium
   
   # Utilities
   - pyyaml>=6.0
@@ -50,6 +35,5 @@ dependencies:
   - pip
   - pip:
     - earthengine-api>=1.4
-    - geemap>=0.35
     - opencv-python>=4.8
     - einops>=0.8
