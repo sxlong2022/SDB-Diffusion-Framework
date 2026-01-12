@@ -10,32 +10,32 @@ def validate_data(
     sparse_measurements: np.ndarray,
     measurement_coordinates: np.ndarray
 ) -> bool:
-    """验证输入数据的有效性"""
+    """Validate input data"""
     try:
-        # 验证Sentinel数据
+        # Validate Sentinel data
         required_bands = ['blue', 'green']
         for band in required_bands:
             if band not in sentinel_data:
-                raise ValueError(f"缺少必要的波段: {band}")
+                raise ValueError(f"Missing required band: {band}")
                 
-        # 验证GEBCO数据
+        # Validate GEBCO data
         if gebco_data.ndim != 3:  # [T, H, W]
-            raise ValueError("GEBCO数据维度不正确")
+            raise ValueError("GEBCO data dimension incorrect")
             
-        # 验证稀疏观测点
+        # Validate sparse measurements
         if sparse_measurements.ndim != 1:
-            raise ValueError("稀疏观测点数据维度不正确")
+            raise ValueError("Sparse measurement data dimension incorrect")
             
         if measurement_coordinates.shape[1] != 2:
-            raise ValueError("观测点坐标必须是二维的(x,y)")
+            raise ValueError("Measurement coordinates must be 2D (x,y)")
             
         if len(sparse_measurements) != len(measurement_coordinates):
-            raise ValueError("观测点数量与坐标数量不匹配")
+            raise ValueError("Number of measurements does not match number of coordinates")
             
         return True
         
     except Exception as e:
-        logger.error(f"数据验证失败: {str(e)}")
+        logger.error(f"Data validation failed: {str(e)}")
         raise
 
 def create_spatiotemporal_grid(
@@ -44,22 +44,22 @@ def create_spatiotemporal_grid(
     shape: Tuple[int, int],
     time_range: Optional[List[int]] = None
 ) -> np.ndarray:
-    """创建时空网格"""
+    """Create spatiotemporal grid"""
     try:
         H, W = shape
         if time_range is None:
             time_range = list(range(2018, 2024))
         T = len(time_range)
         
-        # 创建网格
+        # Create grid
         grid = np.zeros((T, H, W))
         
-        # 归一化坐标
+        # Normalize coordinates
         norm_coords = coordinates.copy()
         norm_coords[:, 0] = norm_coords[:, 0] * (H - 1)
         norm_coords[:, 1] = norm_coords[:, 1] * (W - 1)
         
-        # 填充值
+        # Fill values
         for t in range(T):
             for val, (y, x) in zip(values, norm_coords):
                 y_idx = int(round(y))
@@ -70,7 +70,7 @@ def create_spatiotemporal_grid(
         return grid
         
     except Exception as e:
-        logger.error(f"时空网格创建失败: {str(e)}")
+        logger.error(f"Spatiotemporal grid creation failed: {str(e)}")
         raise
 
 def normalize_data(
@@ -79,28 +79,28 @@ def normalize_data(
     max_val: Optional[float] = None
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """
-    数据标准化
+    Data normalization
     
     Args:
-        data: 输入数据
-        min_val: 最小值（可选）
-        max_val: 最大值（可选）
+        data: Input data
+        min_val: Minimum value (optional)
+        max_val: Maximum value (optional)
         
     Returns:
-        normalized_data: 标准化后的数据
-        stats: 统计信息（最小值、最大值）
+        normalized_data: Normalized data
+        stats: Statistics (min, max)
     """
     try:
-        # 处理NaN值
+        # Handle NaN values
         data = np.nan_to_num(data, nan=np.nanmean(data))
         
-        # 获取数据范围
+        # Get data range
         if min_val is None:
-            min_val = np.percentile(data, 1)  # 使用1%分位数避免异常值影响
+            min_val = np.percentile(data, 1)  # Use 1st percentile to avoid outliers
         if max_val is None:
-            max_val = np.percentile(data, 99)  # 使用99%分位数避免异常值影响
+            max_val = np.percentile(data, 99)  # Use 99th percentile to avoid outliers
             
-        # 标准化到[0,1]区间
+        # Normalize to [0,1] range
         normalized_data = (data - min_val) / (max_val - min_val + 1e-8)
         normalized_data = np.clip(normalized_data, 0, 1)
         
@@ -112,7 +112,7 @@ def normalize_data(
         return normalized_data, stats
         
     except Exception as e:
-        logger.error(f"数据标准化失败: {str(e)}")
+        logger.error(f"Data normalization failed: {str(e)}")
         raise
 
 def calculate_uncertainty(
@@ -121,22 +121,22 @@ def calculate_uncertainty(
     confidence_threshold: float = 0.8
 ) -> np.ndarray:
     """
-    计算预测结果的不确定性
+    Calculate prediction uncertainty
     
     Args:
-        predictions: 不同模型的预测结果
-        measurements: 实测数据（可选）
-        confidence_threshold: 置信度阈值
+        predictions: Predictions from different models
+        measurements: Measured data (optional)
+        confidence_threshold: Confidence threshold
         
     Returns:
-        uncertainty: 不确定性估计
+        uncertainty: Uncertainty estimate
     """
     try:
-        # 1. 计算模型间的标准差
+        # 1. Calculate inter-model standard deviation
         all_predictions = np.stack([pred for pred in predictions.values()])
         model_std = np.std(all_predictions, axis=0)
         
-        # 2. 计算与测量点的偏差（如果有测量数据）
+        # 2. Calculate deviation from measurements (if available)
         measurement_error = np.zeros_like(model_std)
         if measurements is not None and 'depths' in measurements and 'coordinates' in measurements:
             depths = measurements['depths']
@@ -146,7 +146,7 @@ def calculate_uncertainty(
                 y_idx = int(y * model_std.shape[0])
                 x_idx = int(x * model_std.shape[1])
                 
-                # 计算每个模型在测量点的预测误差
+                # Calculate prediction error at each measurement point
                 for pred in predictions.values():
                     error = np.abs(pred[y_idx, x_idx] - depth)
                     measurement_error[y_idx, x_idx] = max(
@@ -154,17 +154,17 @@ def calculate_uncertainty(
                         error
                     )
         
-        # 3. 综合不确定性估计
+        # 3. Combined uncertainty estimate
         uncertainty = (model_std + measurement_error) / 2
         
-        # 4. 归一化
+        # 4. Normalize
         uncertainty = (uncertainty - uncertainty.min()) / (uncertainty.max() - uncertainty.min() + 1e-8)
         
-        # 5. 应用置信度阈值
+        # 5. Apply confidence threshold
         uncertainty[uncertainty > confidence_threshold] = confidence_threshold
         
         return uncertainty
         
     except Exception as e:
-        logger.error(f"不确定性计算失败: {str(e)}")
+        logger.error(f"Uncertainty calculation failed: {str(e)}")
         raise

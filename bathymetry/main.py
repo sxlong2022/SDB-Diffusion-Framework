@@ -8,18 +8,17 @@ from scipy.interpolate import RegularGridInterpolator
 import torch
 import cv2
 
-# 导入自定义模块
+# Import custom modules
 from .preprocessor import DataPreprocessor
 from .classic_models import ClassicModels
 from .s3gm_wrapper import S3GMWrapper
-from .data_fusion import DataFusionModule
 from .utils import validate_data, create_spatiotemporal_grid
 from .gpu_memory import GPUMemoryManager
 
 logger = logging.getLogger(__name__)
 
 class HybridBathymetrySystem:
-    """混合水深测量系统"""
+    """Hybrid bathymetry estimation system"""
     
     def __init__(
         self,
@@ -29,28 +28,27 @@ class HybridBathymetrySystem:
         use_gpu: bool = True
     ):
         """
-        初始化系统
+        Initialize the system
         
         Args:
-            region: 研究区域
-            time_range: 时间范围配置
-            config_path: S3GM配置文件路径
-            use_gpu: 是否使用GPU
+            region: Study area
+            time_range: Time range configuration
+            config_path: S3GM configuration file path
+            use_gpu: Whether to use GPU
         """
         try:
             self.region = region
             self.time_range = time_range
             self.device = torch.device('cuda' if use_gpu and torch.cuda.is_available() else 'cpu')
             
-            # 初始化各个模块
+            # Initialize modules
             self.preprocessor = DataPreprocessor(region)
-            self.classic_models = None  # 先设为None，等待外部设置
+            self.classic_models = None  # Set to None first, wait for external setting
             self.s3gm = S3GMWrapper(
                 config_path or 'configs/s3gm_default.yaml'
             )
-            self.data_fusion = DataFusionModule()
             
-            logger.info(f"系统初始化完成，使用设备: {self.device}")
+            logger.info(f"System initialization completed, using device: {self.device}")
             
         except Exception as e:
             logger.error(f"系统初始化失败: {str(e)}")

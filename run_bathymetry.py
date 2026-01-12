@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 import ee
 ee.Authenticate()
-ee.Initialize(project='fast-banner-452901-c8')
+ee.Initialize(project='YOUR_GEE_PROJECT_ID')
 from datetime import datetime
 from data_acquisition_preprocessing import (
     get_sentinel2_images,
@@ -28,7 +28,7 @@ import matplotlib.gridspec
 import matplotlib.ticker as mticker
 from scipy.stats import wilcoxon
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -36,45 +36,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_logging():
-    """配置日志系统"""
+    """Configure logging system"""
     if len(logging.getLogger().handlers) > 0:
         return
         
     log_dir = 'logging'
     os.makedirs(log_dir, exist_ok=True)
     
-    # 默认使用 INFO 级别，需要详细初始化信息时可改为 DEBUG
+    # Default to INFO level, change to DEBUG for detailed initialization info
     logging.basicConfig(
-        level=logging.INFO,  # 或 logging.DEBUG 查看详细信息
+        level=logging.INFO,  # or logging.DEBUG for detailed info
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
 def parse_args():
-    """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='水深测量系统处理程序')
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Bathymetry System Processing')
     parser.add_argument(
         '--stage',
         type=str,
         choices=['1', '1.5', '1.8','2', '3', '4', '5'],
-        help='处理阶段：1=数据预处理，1.5=经典模型训练，1.8=经典模型验证，2=S3GM模型处理，3=结果后处理与可视化, 4=统计显著性分析, 5=深度和地形分区的详细性能分析'
+        help='Processing stage: 1=Data preprocessing, 1.5=Classic model training, 1.8=Classic model validation, 2=S3GM model processing, 3=Post-processing and visualization, 4=Statistical significance analysis, 5=Detailed performance analysis by depth and terrain zones'
     )
     return parser.parse_args()
 
 def stage1_preprocessing(aoi, gebco_years, sentinel_years):
-    """第一阶段：数据预处理"""
+    """Stage 1: Data preprocessing"""
     try:
-        # 创建时序数据存储结构
+        # Create time series data storage structure
         sentinel_time_series = {
             'blue': np.zeros((6, 64, 64)),  # [T, H, W]
             'green': np.zeros((6, 64, 64))
         }
         gebco_time_series = np.zeros((6, 64, 64))  # [T, H, W]
         
-        # 处理每年的数据
+        # Process data for each year
         for idx, (gebco_year, sentinel_year) in enumerate(zip(gebco_years, sentinel_years)):
-            logger.info(f"处理 {gebco_year} 年发布的 GEBCO 数据（对应 {sentinel_year} 年的观测）...")
+            logger.info(f"Processing GEBCO data released in {gebco_year} (corresponding to {sentinel_year} observations)...")
             
-            # GEBCO数据处理
+            # GEBCO data processing
             gebco_file = os.path.join(
                 'GEBCO_Bathymetry',
                 'GEBCO_26_Dec_2024_86912dfafafa',
@@ -82,17 +82,17 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
             )
             depth_data = load_gebco_data(gebco_file)
             if depth_data.shape != (64, 64):
-                # 创建目标网格
+                # Create target grid
                 target_h, target_w = 64, 64
                 orig_h, orig_w = depth_data.shape
     
-                # 创建源和目标坐标网格
+                # Create source and target coordinate grids
                 y_orig = np.linspace(0, 1, orig_h)
                 x_orig = np.linspace(0, 1, orig_w)
                 y_target = np.linspace(0, 1, target_h)
                 x_target = np.linspace(0, 1, target_w)
     
-                # 使用双线性插值进行重采样
+                # Use bilinear interpolation for resampling
                 interpolator = RegularGridInterpolator(
                     (y_orig, x_orig), 
                     depth_data,
@@ -101,19 +101,19 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
                     fill_value=np.nan
                 )
     
-                # 创建目标坐标点
+                # Create target coordinate points
                 xx, yy = np.meshgrid(x_target, y_target)
                 points = np.stack([yy.ravel(), xx.ravel()], axis=1)
     
-                # 执行插值
+                # Perform interpolation
                 depth_data = interpolator(points).reshape(target_h, target_w)
     
-                logger.info(f"已将GEBCO数据重采样至目标尺寸: {depth_data.shape}")
+                logger.info(f"Resampled GEBCO data to target size: {depth_data.shape}")
             
             gebco_time_series[idx] = depth_data
-            logger.info(f"GEBCO数据范围 (重采样后): [{depth_data.min():.4f}, {depth_data.max():.4f}]")
+            logger.info(f"GEBCO data range (after resampling): [{depth_data.min():.4f}, {depth_data.max():.4f}]")
             
-            # Sentinel-2数据处理
+            # Sentinel-2 data processing
             date_range = (f'{sentinel_year}-01-01', f'{sentinel_year}-12-31')
             image_collection = get_sentinel2_images(aoi, date_range)
             processed_image = apply_miwc(
@@ -125,23 +125,23 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
             )
             
             def get_band_array(image, band_name, aoi):
-                """获取指定波段的数组数据"""
+                """Get array data for specified band"""
                 try:
-                    # 获取实际可用的波段名称
+                    # Get available band names
                     available_bands = image.bandNames().getInfo()
-                    logger.info(f"可用波段: {available_bands}")
+                    logger.info(f"Available bands: {available_bands}")
                     
-                    # 首先将图像重采样到目标分辨率
-                    target_scale = math.sqrt(aoi.area().getInfo() / (64 * 64))  # 计算目标分辨率
+                    # First resample image to target resolution
+                    target_scale = math.sqrt(aoi.area().getInfo() / (64 * 64))  # Calculate target resolution
                     resampled_image = image.resample('bilinear').reproject(
                         crs=image.projection(),
                         scale=target_scale
                     )
                     
-                    # 选择波段（使用列表格式）
+                    # Select band (using list format)
                     band_data = resampled_image.select([band_name])
                     
-                    # 获取数据
+                    # Get data
                     data = band_data.reduceRegion(
                         reducer=ee.Reducer.toList(),
                         geometry=aoi,
@@ -150,61 +150,61 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
                     ).get(band_name).getInfo()
                     
                     if not data:
-                        logger.error(f"{band_name}波段数据获取失败")
+                        logger.error(f"Failed to retrieve {band_name} band data")
                         return None
                         
-                    # 转换为numpy数组并重塑
+                    # Convert to numpy array and reshape
                     temp_grid = np.array(data)
-                    logger.info(f"获取的数据大小: {temp_grid.size}")
+                    logger.info(f"Retrieved data size: {temp_grid.size}")
                     
-                    # 计算最接近的方形网格尺寸
+                    # Calculate nearest square grid size
                     grid_size = int(np.sqrt(temp_grid.size))
                     temp_grid = temp_grid[:grid_size*grid_size].reshape(grid_size, grid_size)
                     
-                    # 使用scipy.ndimage进行精确重采样到64x64
+                    # Use scipy.ndimage for precise resampling to 64x64
                     resampled_grid = zoom(temp_grid, (64/grid_size, 64/grid_size), order=1)
-                    logger.info(f"重采样后的图像尺寸: {resampled_grid.shape}")
+                    logger.info(f"Resampled image size: {resampled_grid.shape}")
                     
                     return resampled_grid
                     
                 except Exception as e:
-                    logger.error(f"获取{band_name}波段数据时发生错误: {str(e)}")
+                    logger.error(f"Error retrieving {band_name} band data: {str(e)}")
                     return None
             
-            # 确保processed_image是ee.Image类型并包含必要的波段
+            # Ensure processed_image is ee.Image type and contains necessary bands
             processed_image = ee.Image(processed_image)
             available_bands = processed_image.bandNames().getInfo()
-            logger.info(f"MIWC处理后的可用波段: {available_bands}")
+            logger.info(f"Available bands after MIWC processing: {available_bands}")
 
             if not all(band in available_bands for band in ['blue', 'green']):
-                logger.warning("MIWC处理后缺少必要的波段")
+                logger.warning("Missing required bands after MIWC processing")
                 continue
 
-            # 使用列表格式获取波段数据
+            # Get band data using list format
             blue_array = get_band_array(processed_image, 'blue', aoi)
             green_array = get_band_array(processed_image, 'green', aoi)
             
-            # 数据验证
+            # Data validation
             if blue_array is None or green_array is None:
-                logger.error("无法获取有效的波段数据")
+                logger.error("Unable to retrieve valid band data")
                 continue
                 
             if blue_array.shape != green_array.shape:
-                logger.error(f"波段形状不一致: blue={blue_array.shape}, green={green_array.shape}")
+                logger.error(f"Band shapes inconsistent: blue={blue_array.shape}, green={green_array.shape}")
                 continue
                 
             if np.all(np.isnan(blue_array)) or np.all(np.isnan(green_array)):
-                logger.error("波段数据全为NaN")
+                logger.error("Band data is all NaN")
                 continue
             
             sentinel_time_series['blue'][idx] = blue_array
             sentinel_time_series['green'][idx] = green_array
-            logger.info(f"Sentinel-2 blue波段范围 (重采样后): [{blue_array.min():.4f}, {blue_array.max():.4f}]")
-            logger.info(f"Sentinel-2 green波段范围 (重采样后): [{green_array.min():.4f}, {green_array.max():.4f}]")
+            logger.info(f"Sentinel-2 blue band range (after resampling): [{blue_array.min():.4f}, {blue_array.max():.4f}]")
+            logger.info(f"Sentinel-2 green band range (after resampling): [{green_array.min():.4f}, {green_array.max():.4f}]")
             
-            logger.info(f"完成 {sentinel_year} 年数据的预处理和存储")
+            logger.info(f"Completed preprocessing and storage for {sentinel_year} data")
             
-        # 保存预处理结果
+        # Save preprocessing results
         output_dir = 'intermediate_results'
         os.makedirs(output_dir, exist_ok=True)
         np.save(os.path.join(output_dir, 'sentinel_time_series.npy'), sentinel_time_series)
@@ -213,40 +213,40 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
         return sentinel_time_series, gebco_time_series
         
     except Exception as e:
-        logger.error(f"第一阶段处理失败: {str(e)}")
+        logger.error(f"Stage 1 processing failed: {str(e)}")
         raise
 
 def stage1_5_model_training(sentinel_time_series):
-    """第1.5阶段：训练经典模型"""
+    """Stage 1.5: Train classic models"""
     try:
-        logger.info("开始训练经典模型...")
+        logger.info("Starting classic model training...")
         classic_models = ClassicModels()
         
-        # 初始化预处理器获取海图数据
+        # Initialize preprocessor to get nautical chart data
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         
-        # 使用原始正值深度，并应用深度范围限制
+        # Use original positive depths and apply depth range limits
         depths = np.abs(nautical_charts['depths'])
         valid_depth_mask = (depths >= 0.1) & (depths <= 75.0)
         
         if not np.any(valid_depth_mask):
-            raise ValueError("没有在有效深度范围内的数据点")
+            raise ValueError("No data points within valid depth range")
             
         nautical_charts['depths'] = depths[valid_depth_mask]
         nautical_charts['coordinates'] = nautical_charts['coordinates'][valid_depth_mask]
         
-        logger.info(f"原始深度范围: {depths.min():.2f} 到 {depths.max():.2f} 米")
-        logger.info(f"有效深度范围: {nautical_charts['depths'].min():.2f} 到 {nautical_charts['depths'].max():.2f} 米")
-        logger.info(f"有效深度点数: {np.sum(valid_depth_mask)}")
+        logger.info(f"Original depth range: {depths.min():.2f} to {depths.max():.2f} m")
+        logger.info(f"Valid depth range: {nautical_charts['depths'].min():.2f} to {nautical_charts['depths'].max():.2f} m")
+        logger.info(f"Number of valid depth points: {np.sum(valid_depth_mask)}")
         
-        # 使用最新年份(2023)的遥感数据
-        t = -1  # 最后一个时间点
+        # Use latest year (2023) remote sensing data
+        t = -1  # Last time point
         blue = sentinel_time_series['blue'][t]
         green = sentinel_time_series['green'][t]
         
-        # 提取海图位置对应的波段值
+        # Extract band values at nautical chart locations
         H, W = blue.shape
         coords = nautical_charts['coordinates']
         depths = nautical_charts['depths']
@@ -267,11 +267,11 @@ def stage1_5_model_training(sentinel_time_series):
         green_values = np.array(green_values)
         valid_depths = np.array(valid_depths)
         
-        # 训练随机森林模型
+        # Train Random Forest model
         r2_rf = classic_models.train_rf(blue_values, green_values, valid_depths)
-        logger.info(f"随机森林模型训练完成，R²: {r2_rf:.4f}")
+        logger.info(f"Random Forest model training completed, R²: {r2_rf:.4f}")
         
-        # 保存模型参数和模型本身
+        # Save model parameters and model itself
         os.makedirs('intermediate_results/model_params', exist_ok=True)
         np.save('intermediate_results/model_params/rf_params.npy', classic_models.rf_params)
         dump(classic_models.rf_model, 'intermediate_results/model_params/rf_model.joblib')
@@ -279,16 +279,16 @@ def stage1_5_model_training(sentinel_time_series):
         return classic_models
         
     except Exception as e:
-        logger.error(f"经典模型训练失败: {str(e)}")
+        logger.error(f"Classic model training failed: {str(e)}")
         raise
 
 def stage1_8_model_validation(sentinel_time_series):
-    """第1.8阶段：经典模型验证"""
+    """Stage 1.8: Classic model validation"""
     try:
         logger.info("Starting classic model validation...")
         classic_models = load_trained_classic_models()
         
-        # 2. 创建输出目录
+        # 2. Create output directory
         output_dir = 'results/classic_models'
         os.makedirs(output_dir, exist_ok=True)
 
@@ -312,7 +312,7 @@ def stage1_8_model_validation(sentinel_time_series):
             import ee
             if not ee.data._credentials:
                  ee.Authenticate()
-                 ee.Initialize(project='fast-banner-452901-c8')
+                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
         except ImportError:
              logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
              raise
@@ -323,7 +323,7 @@ def stage1_8_model_validation(sentinel_time_series):
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
 
-        # 4. 预测所有年份
+        # 4. Predict for all years
         depths = []
         years = range(2018, 2024)
         for t, year in enumerate(years):
@@ -333,18 +333,18 @@ def stage1_8_model_validation(sentinel_time_series):
             depths.append(depth)
             logger.info(f"Completed prediction for year {year}")
         
-        # 5. 创建并保存时序合成图 (pass land mask and chart coords)
-        chart_coords_rf = nautical_charts['coordinates'] # Get coordinates
+        # 5. Create and save time series composite plot (pass land mask and chart coords)
+        chart_coords_rf = nautical_charts['coordinates']  # Get coordinates
         create_time_series_plot(depths, years, 'rf', output_dir, land_mask_array=land_mask_array, chart_coords=chart_coords_rf)
         
-        # 6. 2023年预测结果与海图数据对比
-        # 获取2023年的预测结果和实际海图数据
-        t = -1  # 2023年的索引
+        # 6. Compare 2023 predictions with nautical chart data
+        # Get 2023 prediction results and actual nautical chart data
+        t = -1  # 2023 index
         predicted_depth = depths[t]
         # H, W defined earlier during mask loading or prediction
         if 'H' not in locals(): H, W = predicted_depth.shape
 
-        # 提取海图位置对应的预测值 (nautical_charts is already loaded)
+        # Extract predicted values at nautical chart locations (nautical_charts is already loaded)
         coords = nautical_charts['coordinates']
         true_depths = np.abs(nautical_charts['depths'])
 
@@ -363,7 +363,7 @@ def stage1_8_model_validation(sentinel_time_series):
         predicted_values = np.array(predicted_values)
         valid_true_depths = np.array(valid_true_depths)
 
-        # 计算验证指标
+        # Calculate validation metrics
         rmse = np.nan
         mae = np.nan
         r2 = np.nan
@@ -419,7 +419,7 @@ def stage1_8_model_validation(sentinel_time_series):
         raise
 
 def create_time_series_plot(depths, years, model_name, output_dir, land_mask_array=None, chart_coords=None):
-    """创建时序合成图"""
+    """Create time series composite plot"""
     try:
         # Increase font sizes for better visibility when shrunk in Word column
         FONTSIZE_MAIN_LABELS = 14  # Axes labels, colorbar label
@@ -494,7 +494,7 @@ def create_time_series_plot(depths, years, model_name, output_dir, land_mask_arr
                 ax.imshow(land_mask_array, cmap=cmap_land, norm=norm_land, interpolation='nearest', zorder=10, extent=extent, origin='upper', aspect='auto')
             # -------------------------
 
-        # 添加colorbar
+        # Add colorbar
         if im:
             fig.tight_layout(rect=[0, 0.05, 1, 0.95])
             cax = fig.add_axes([0.15, 0.03, 0.7, 0.03])
@@ -509,79 +509,79 @@ def create_time_series_plot(depths, years, model_name, output_dir, land_mask_arr
         plt.close(fig) # Close the figure
         
     except Exception as e:
-        logger.error(f"创建时序合成图失败: {str(e)}")
+        logger.error(f"Failed to create time series plot: {str(e)}")
         raise
 
 def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sentinel_years):
-    """第二阶段：S3GM模型处理"""
+    """Stage 2: S3GM model processing"""
     try:
-        # 创建必要的目录
+        # Create necessary directories
         results_dir = 'results'
         models_dir = os.path.join(results_dir, 's3gm_pretrained_models')  
         time_series_dir = os.path.join(results_dir, 's3gm_time_series') 
         os.makedirs(results_dir, exist_ok=True)
         os.makedirs(models_dir, exist_ok=True)
         os.makedirs(time_series_dir, exist_ok=True)
-        # Stage 2.1: 预训练
+        # Stage 2.1: Pretraining
         pretrained_model_path = os.path.join(models_dir, 's3gm_pretrained.pth')
         if not os.path.exists(pretrained_model_path):
-            logger.info("执行Stage 2.1: 预训练阶段")
+            logger.info("Executing Stage 2.1: Pretraining phase")
             
-            # 先加载训练好的经典模型
+            # Load trained classic models first
             classic_models = load_trained_classic_models()
             system.set_classic_models(classic_models)
             
-            # 使用经典模型生成预测结果
+            # Generate predictions using classic models
             classic_predictions = []
             for year in sentinel_years:
                 blue = sentinel_time_series['blue'][year - 2018]
                 green = sentinel_time_series['green'][year - 2018]
                 depth = system.classic_models.predict_rf(blue, green)
                 if np.isnan(depth).any() or np.isinf(depth).any():
-                    logger.warning(f"{year}年经典模型预测结果包含无效值")
+                    logger.warning(f"Classic model prediction for {year} contains invalid values")
                     depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
                 classic_predictions.append(depth)
             
-            # 将预测结果转换为时序数组 (T, H, W)
+            # Convert predictions to time series array (T, H, W)
             classic_time_series = np.stack(classic_predictions)
             
-            # 对数据进行标准化处理
+            # Normalize data
             preprocessor = DataPreprocessor()
             normalized_classic, classic_stats = preprocessor._normalize_data(classic_time_series, 'classic')
             normalized_gebco, gebco_stats = preprocessor._normalize_data(gebco_time_series, 'gebco')
             
-            # 保存统计信息，用于后续反标准化
+            # Save statistics for later denormalization
             np.save('intermediate_results/classic_stats.npy', classic_stats)
             np.save('intermediate_results/gebco_stats.npy', gebco_stats)
             
-            # *** 新增：保存归一化后的数据 ***
+            # Save normalized data
             np.save('intermediate_results/classic_normalized.npy', normalized_classic)
             np.save('intermediate_results/gebco_normalized.npy', normalized_gebco)
-            logger.info("已保存归一化后的经典模型和GEBCO数据")
+            logger.info("Saved normalized classic model and GEBCO data")
             
             pretrain_data = {
-                'classic': normalized_classic,  # 现在是[0,1]范围
-                'gebco': normalized_gebco,     # 现在是[0,1]范围
+                'classic': normalized_classic,  # Now in [0,1] range
+                'gebco': normalized_gebco,     # Now in [0,1] range
             }
             
-            # 执行预训练（预训练函数内部会自动保存模型）
+            # Execute pretraining (model is saved automatically inside pretrain function)
             system.s3gm.pretrain(
                 classic_data=pretrain_data['classic'],
                 gebco_data=pretrain_data['gebco'],
                 save_path=pretrained_model_path
             )
         else:
-            logger.info("加载已有预训练模型")
+            logger.info("Loading existing pretrained model")
             system.s3gm.load_pretrained(pretrained_model_path)
         
-        # 添加范围适配参数日志
-        logger.info("模型配置信息:")
-        logger.info(f"  - 范围适配: {system.s3gm.config.range_adaptation['enabled']}")
-        logger.info(f"  - 混合激活函数: {system.s3gm.config.range_adaptation['use_mixed_activation']}")
-        logger.info(f"  - 陆地标记值: {system.s3gm.config.range_adaptation['land_value']}")
+        # Log range adaptation parameters
+        logger.info("Model configuration:")
+        logger.info(f"  - Range adaptation: {system.s3gm.config.range_adaptation['enabled']}")
+        logger.info(f"  - Mixed activation: {system.s3gm.config.range_adaptation['use_mixed_activation']}")
+        logger.info(f"  - Land marker value: {system.s3gm.config.range_adaptation['land_value']}")
         
-        # 在Stage 2.2之前验证模型
-        logger.info("验证模型...")
+        # Validate model before Stage 2.2
+        logger.info("Validating model...")
         test_input = torch.randn(1, 6, 5, 64, 64).to(system.s3gm.device)
         timesteps = torch.zeros(1, dtype=torch.long).to(system.s3gm.device)
         with torch.no_grad():
@@ -593,71 +593,70 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
                 latent_mask=torch.ones(1, 6, 1, 1, 1).to(system.s3gm.device),
                 frame_indices=torch.arange(6).unsqueeze(0).to(system.s3gm.device)
             )
-            # 获取模型输出的第一个元素（主要输出）
+            # Get first element of model output (main output)
             test_output = test_output[0]
-            # 修改验证逻辑
+            # Validation logic
             if torch.all(torch.eq(test_output, torch.zeros_like(test_output))):
-                raise ValueError("预训练模型输出全为0，需要重新训练")
-            logger.info(f"模型测试输出范围: [{test_output.min().item():.4f}, {test_output.max().item():.4f}]")
+                raise ValueError("Pretrained model output is all zeros, retraining required")
+            logger.info(f"Model test output range: [{test_output.min().item():.4f}, {test_output.max().item():.4f}]")
             
-        # Stage 2.2: 条件采样
-        logger.info("执行Stage 2.2: 条件采样阶段")
-        # 获取2023年海图数据
+        # Stage 2.2: Conditional sampling
+        logger.info("Executing Stage 2.2: Conditional sampling phase")
+        # Get 2023 nautical chart data
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         
-        # 对海图数据进行标准化
+        # Normalize nautical chart data
         preprocessor = DataPreprocessor()
         normalized_depths, chart_stats = preprocessor._normalize_data(
             nautical_charts['depths'], 
             data_type='chart'
         )
         
-        # 保存海图数据的统计信息（用于后续分析）
+        # Save nautical chart statistics (for later analysis)
         os.makedirs('intermediate_results', exist_ok=True)
         np.save('intermediate_results/chart_stats.npy', chart_stats)
-        logger.info(f"海图数据统计信息已保存: {chart_stats}")
+        logger.info(f"Nautical chart statistics saved: {chart_stats}")
         
-        # 更新nautical_charts字典
+        # Update nautical_charts dictionary
         nautical_charts_normalized = {
             'depths': normalized_depths,
             'coordinates': nautical_charts['coordinates']
         }
         
-        # 加载预处理数据
-        # 注意：这里假设 classic_data 和 gebco_data 已经是归一化后的
-        # 你可能需要先加载它们，然后使用 preprocessor 进行归一化
-        classic_data_normalized = np.load('intermediate_results/classic_normalized.npy') # 假设已保存归一化的经典模型数据
-        gebco_data_normalized = np.load('intermediate_results/gebco_normalized.npy') # 假设已保存归一化的GEBCO数据
+        # Load preprocessed data
+        # Note: Assuming classic_data and gebco_data are already normalized
+        classic_data_normalized = np.load('intermediate_results/classic_normalized.npy')
+        gebco_data_normalized = np.load('intermediate_results/gebco_normalized.npy')
 
-        # 执行条件采样 - 传入经典模型和GEBCO数据
+        # Execute conditional sampling - pass classic model and GEBCO data
         results = system.s3gm.conditional_sampling(
             measurements=nautical_charts_normalized['depths'],
             measurement_coordinates=nautical_charts_normalized['coordinates'],
             years=sentinel_years,
-            classic_data=classic_data_normalized, # 传入归一化的经典数据
-            gebco_data=gebco_data_normalized      # 传入归一化的GEBCO数据
+            classic_data=classic_data_normalized,
+            gebco_data=gebco_data_normalized
         )
         
-        # 在保存结果之前，检查results的形状和内容
+        # Check results shape and content before saving
         if isinstance(results, torch.Tensor):
             results = results.cpu().numpy()
         
-        # 保存结果时传入chart_stats
+        # Save results with chart_stats
         save_results(
             depths=results,
             years=sentinel_years,
             output_dir=time_series_dir,
-            chart_stats=chart_stats  # 确保传入chart_stats
+            chart_stats=chart_stats
         )
         
     except Exception as e:
-        logger.error(f"第二阶段处理失败: {str(e)}")
+        logger.error(f"Stage 2 processing failed: {str(e)}")
         raise
 
 def stage3_postprocessing():
-    """第三阶段：后处理分析"""
+    """Stage 3: Post-processing analysis"""
     try:
         output_dir = 'results/s3gm_visualization'
         os.makedirs(output_dir, exist_ok=True)
@@ -685,7 +684,7 @@ def stage3_postprocessing():
             import ee
             if not ee.data._credentials:
                  ee.Authenticate()
-                 ee.Initialize(project='fast-banner-452901-c8')
+                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
         except ImportError:
              logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
              raise
@@ -697,7 +696,7 @@ def stage3_postprocessing():
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
 
-        chart_coords_s3gm = nautical_charts['coordinates'] # Get coordinates
+        chart_coords_s3gm = nautical_charts['coordinates']  # Get coordinates
         # Create time-series composite plot, passing the mask and chart coords
         create_time_series_plot(depths, years, 's3gm', output_dir, land_mask_array, chart_coords=chart_coords_s3gm)
 
@@ -869,157 +868,157 @@ def stage3_postprocessing():
         # --- End of Difference Map ---
 
     except Exception as e:
-        logger.error(f"后处理分析失败: {str(e)}")
+        logger.error(f"Post-processing analysis failed: {str(e)}")
         raise
 
 def load_trained_classic_models():
-    """加载训练好的经典模型和参数"""
+    """Load trained classic models and parameters"""
     try:
         classic_models = ClassicModels()
         
-        # 加载参数
+        # Load parameters
         rf_params = np.load('intermediate_results/model_params/rf_params.npy', allow_pickle=True).item()
         classic_models.rf_params = rf_params
         
-        # 加载随机森林模型
+        # Load Random Forest model
         classic_models.rf_model = load('intermediate_results/model_params/rf_model.joblib')
         
         return classic_models
         
     except Exception as e:
-        logger.error(f"加载经典模型失败: {str(e)}")
+        logger.error(f"Failed to load classic models: {str(e)}")
         raise
 
 def denormalize_bathymetry(normalized_data: np.ndarray, stats: Dict[str, float]) -> np.ndarray:
-    """使用 Min-Max 反标准化水深数据，并强制物理约束"""
+    """Denormalize bathymetry data using Min-Max and enforce physical constraints"""
     try:
-        # 从 stats 中获取物理范围和特殊值
+        # Get physical range and special values from stats
         min_phys = stats.get('min_phys', 0.0)
         max_phys = stats.get('max_phys', 90.0)
         land_value_norm = stats.get('land_value', 1.5)
         eps = 1e-6
 
-        # 识别陆地区域 (使用 isclose 以处理浮点误差)
+        # Identify land regions (using isclose to handle floating point errors)
         land_mask = np.isclose(normalized_data, land_value_norm)
         
-        # 检查实际数据范围（用于调试）
+        # Check actual data range (for debugging)
         valid_data = normalized_data[~land_mask & ~np.isnan(normalized_data)]
         if len(valid_data) > 0:
             actual_min, actual_max = valid_data.min(), valid_data.max()
-            logger.info(f"反标准化前有效数据范围: [{actual_min:.4f}, {actual_max:.4f}]")
-            # 对超出 [-1, 1] 的值发出警告
+            logger.info(f"Valid data range before denormalization: [{actual_min:.4f}, {actual_max:.4f}]")
+            # Warn if values exceed [-1, 1] range
             if actual_min < -1.0 - eps or actual_max > 1.0 + eps:
-                 logger.warning(f"  注意: 有效数据范围超出预期的 [-1, 1] 区间！")
+                 logger.warning(f"  Note: Valid data range exceeds expected [-1, 1] interval!")
         else:
-            logger.warning("反标准化前没有找到有效（非陆地/NaN）数据")
+            logger.warning("No valid (non-land/NaN) data found before denormalization")
 
-        # 执行反标准化计算: phys = ((norm + 1) / 2) * (max_phys - min_phys) + min_phys
+        # Execute denormalization: phys = ((norm + 1) / 2) * (max_phys - min_phys) + min_phys
         depth_denorm = ((normalized_data + 1) / 2) * (max_phys - min_phys) + min_phys
 
-        # 处理特殊区域：将陆地区域设为0米（或根据需要设为NaN）
+        # Handle special regions: set land areas to 0m (or NaN as needed)
         depth_denorm = np.where(land_mask, 0.0, depth_denorm)
         
-        # 强制物理约束：水深必须非负 (理论上 Min-Max 不会产生负值，除非原始数据或操作有问题)
+        # Enforce physical constraints: depth must be non-negative
         sea_mask = ~land_mask
         if np.any(depth_denorm[sea_mask] < 0):
             neg_count = np.sum(depth_denorm[sea_mask] < 0)
             total_count = np.sum(sea_mask)
-            logger.warning(f"检测到负水深值，占海域像素的 {(neg_count/total_count)*100:.2f}% (理论上不应发生)")
-            logger.warning(f"负值范围: [{depth_denorm[sea_mask & (depth_denorm < 0)].min():.2f}, 0) 米")
+            logger.warning(f"Negative depth values detected, {(neg_count/total_count)*100:.2f}% of sea pixels (should not occur)")
+            logger.warning(f"Negative value range: [{depth_denorm[sea_mask & (depth_denorm < 0)].min():.2f}, 0) m")
             depth_denorm[sea_mask] = np.maximum(depth_denorm[sea_mask], 0.0)
         
-        # 处理可能的 NaN 值 (例如，如果输入本身包含NaN)
-        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0) # 将NaN也设为0米
+        # Handle possible NaN values
+        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0)
         
-        # 最终检查和日志
+        # Final check and logging
         if np.any(sea_mask):
             sea_depths = depth_denorm[sea_mask]
-            logger.info(f"反标准化后深度范围 (海域): [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")
+            logger.info(f"Depth range after denormalization (sea): [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")
         else:
-            logger.warning("反标准化后没有海域像素")
+            logger.warning("No sea pixels after denormalization")
             
         return depth_denorm
         
     except Exception as e:
-        logger.error(f"反标准化失败: {str(e)}")
+        logger.error(f"Denormalization failed: {str(e)}")
         raise
 
 def save_results(depths, years, output_dir, chart_stats):
-    """保存预测结果
+    """Save prediction results
     
     Args:
-        depths: 形状为[1, T, C, H, W]的张量，其中:
+        depths: Tensor with shape [1, T, C, H, W], where:
             - 1: batch size
-            - T: 时间步数（年份数）
-            - C: 通道数（组件数）
-            - H, W: 图像高度和宽度
-        output_dir: 输出目录
-        chart_stats: 海图数据的统计信息
+            - T: number of time steps (years)
+            - C: number of channels (components)
+            - H, W: image height and width
+        output_dir: Output directory
+        chart_stats: Statistics of nautical chart data
     """
     try:
         os.makedirs(output_dir, exist_ok=True)
         
-        # 对每一年的预测结果进行反标准化和保存
+        # Denormalize and save prediction results for each year
         for t, year in enumerate(years):
-            # 获取当前年份的深度数据（通道2是深度数据）
-            depth_data = depths[0, t, 2]  # 形状应为[H, W]
+            # Get depth data for current year (channel 2 is depth data)
+            depth_data = depths[0, t, 2]  # Shape should be [H, W]
             
-            # 在反标准化之前检查数据
-            logger.info(f"{year}年反标准化前:")
-            logger.info(f"- 数据范围: [{depth_data.min():.4f}, {depth_data.max():.4f}]")
-            logger.info(f"- 非零值分布: {np.percentile(depth_data[depth_data != 0], [25, 50, 75])}")
+            # Check data before denormalization
+            logger.info(f"Year {year} before denormalization:")
+            logger.info(f"- Data range: [{depth_data.min():.4f}, {depth_data.max():.4f}]")
+            logger.info(f"- Non-zero value distribution: {np.percentile(depth_data[depth_data != 0], [25, 50, 75])}")
             
-            # 使用统一的海图统计信息进行反标准化
+            # Denormalize using unified chart statistics
             depth_denorm = denormalize_bathymetry(depth_data, chart_stats)
             
-            # 反标准化后检查
-            logger.info(f"{year}年反标准化后:")
-            logger.info(f"- 数据范围: [{depth_denorm.min():.4f}, {depth_denorm.max():.4f}]")
-            logger.info(f"- 有效值分布: {np.percentile(depth_denorm[depth_denorm > 0], [25, 50, 75])}")
+            # Check after denormalization
+            logger.info(f"Year {year} after denormalization:")
+            logger.info(f"- Data range: [{depth_denorm.min():.4f}, {depth_denorm.max():.4f}]")
+            logger.info(f"- Valid value distribution: {np.percentile(depth_denorm[depth_denorm > 0], [25, 50, 75])}")
             
-            # 保存反标准化后的结果
+            # Save denormalized results
             output_path = os.path.join(output_dir, f'bathymetry_{year}.npy')
             np.save(output_path, depth_denorm)
             
-            logger.info(f"已保存{year}年的预测结果: {output_path}")
-            logger.info(f"{year}年深度范围: [{depth_denorm.min():.2f}, {depth_denorm.max():.2f}] 米")
-            logger.info(f"{year}年陆地像素比例: {np.mean(np.abs(depth_data - 1.5) < 0.1):.2%}")
+            logger.info(f"Saved prediction results for {year}: {output_path}")
+            logger.info(f"Year {year} depth range: [{depth_denorm.min():.2f}, {depth_denorm.max():.2f}] m")
+            logger.info(f"Year {year} land pixel ratio: {np.mean(np.abs(depth_data - 1.5) < 0.1):.2%}")
             
     except Exception as e:
-        logger.error(f"保存结果失败: {str(e)}")
+        logger.error(f"Failed to save results: {str(e)}")
         raise
 
 def stage4_statistical_analysis():
-    """第四阶段：统计显著性分析"""
+    """Stage 4: Statistical significance analysis"""
     try:
-        logger.info("开始执行第四阶段：统计显著性分析")
+        logger.info("Starting Stage 4: Statistical significance analysis")
 
-        # 1. 加载真实海图数据 (Ground Truth)
-        logger.info("加载海图数据...")
+        # 1. Load ground truth nautical chart data
+        logger.info("Loading nautical chart data...")
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         true_depths_all = np.abs(nautical_charts['depths'])
         coords = nautical_charts['coordinates']
-        logger.info(f"成功加载 {len(true_depths_all)} 个海图测量点")
+        logger.info(f"Successfully loaded {len(true_depths_all)} nautical chart measurement points")
 
-        # 2. 加载2023年的模型预测结果
-        logger.info("加载 RF 和 S3GM 的2023年预测结果...")
+        # 2. Load 2023 model prediction results
+        logger.info("Loading RF and S3GM 2023 prediction results...")
         rf_pred_path = 'results/classic_models/rf_2023.npy'
         s3gm_pred_path = 'results/s3gm_time_series/bathymetry_2023.npy'
 
         if not os.path.exists(rf_pred_path):
-            logger.error(f"RF预测文件未找到: {rf_pred_path}. 请先运行Stage 1.8以生成此文件。")
+            logger.error(f"RF prediction file not found: {rf_pred_path}. Please run Stage 1.8 first.")
             return
         if not os.path.exists(s3gm_pred_path):
-            logger.error(f"S3GM预测文件未找到: {s3gm_pred_path}. 请先运行Stage 2和3。")
+            logger.error(f"S3GM prediction file not found: {s3gm_pred_path}. Please run Stage 2 and 3 first.")
             return
             
         rf_preds_map = np.load(rf_pred_path)
         s3gm_preds_map = np.load(s3gm_pred_path)
-        logger.info("预测结果加载成功")
+        logger.info("Prediction results loaded successfully")
 
-        # 3. 对齐数据
+        # 3. Align data
         H, W = rf_preds_map.shape
         rf_preds_aligned = []
         s3gm_preds_aligned = []
@@ -1031,7 +1030,7 @@ def stage4_statistical_analysis():
                 rf_val = rf_preds_map[y_idx, x_idx]
                 s3gm_val = s3gm_preds_map[y_idx, x_idx]
                 
-                # 仅保留所有模型和真值都有效的点
+                # Keep only points where all models and ground truth are valid
                 if np.isfinite(rf_val) and np.isfinite(s3gm_val) and rf_val > 0 and s3gm_val > 0:
                     rf_preds_aligned.append(rf_val)
                     s3gm_preds_aligned.append(s3gm_val)
@@ -1040,27 +1039,27 @@ def stage4_statistical_analysis():
         rf_preds_aligned = np.array(rf_preds_aligned)
         s3gm_preds_aligned = np.array(s3gm_preds_aligned)
         true_depths_aligned = np.array(true_depths_aligned)
-        logger.info(f"数据对齐后，用于统计分析的有效验证点数: {len(true_depths_aligned)}")
+        logger.info(f"After alignment, valid validation points for statistical analysis: {len(true_depths_aligned)}")
 
-        # 4. 计算绝对误差
+        # 4. Calculate absolute errors
         rf_abs_errors = np.abs(rf_preds_aligned - true_depths_aligned)
         s3gm_abs_errors = np.abs(s3gm_preds_aligned - true_depths_aligned)
 
-        # 5. 执行Wilcoxon符号秩检验
-        # H0: 误差差异中位数为0
-        # H1: RF误差 > S3GM误差 (S3GM误差更小)
-        logger.info("执行Wilcoxon符号秩检验...")
+        # 5. Perform Wilcoxon signed-rank test
+        # H0: Median of error differences is 0
+        # H1: RF error > S3GM error (S3GM error is smaller)
+        logger.info("Performing Wilcoxon signed-rank test...")
         stat, p_value = wilcoxon(rf_abs_errors, s3gm_abs_errors, alternative='greater')
         logger.info("--- Wilcoxon Signed-Rank Test Results ---")
         logger.info(f"Statistic: {stat:.4f}")
         logger.info(f"P-value: {p_value:.6f}")
         if p_value < 0.05:
-            logger.info("结果解读: P值小于0.05，我们拒绝零假设。S3GM模型的预测误差在统计上显著低于RF模型。")
+            logger.info("Interpretation: P-value < 0.05, we reject the null hypothesis. S3GM model prediction error is statistically significantly lower than RF model.")
         else:
-            logger.info("结果解读: P值不小于0.05，我们无法拒绝零假设。没有足够的统计证据表明S3GM模型显著优于RF模型。")
+            logger.info("Interpretation: P-value >= 0.05, we cannot reject the null hypothesis. Insufficient statistical evidence that S3GM model is significantly better than RF model.")
 
-        # 6. 使用Bootstrapping计算MAE改进量的95%置信区间
-        logger.info("\n使用Bootstrapping计算MAE改进量的95%置信区间...")
+        # 6. Use Bootstrapping to calculate 95% confidence interval for MAE improvement
+        logger.info("\nUsing Bootstrapping to calculate 95% confidence interval for MAE improvement...")
         diff_mae = rf_abs_errors - s3gm_abs_errors # MAE_RF - MAE_S3GM
         n_iterations = 10000
         bootstrap_means = []
@@ -1071,24 +1070,24 @@ def stage4_statistical_analysis():
         confidence_interval = np.percentile(bootstrap_means, [2.5, 97.5])
         mean_improvement = np.mean(diff_mae)
         logger.info("--- 95% Confidence Interval for MAE Improvement (MAE_RF - MAE_S3GM) ---")
-        logger.info(f"平均改进量: {mean_improvement:.4f} m")
-        logger.info(f"95%置信区间: [{confidence_interval[0]:.4f}, {confidence_interval[1]:.4f}] m")
+        logger.info(f"Mean improvement: {mean_improvement:.4f} m")
+        logger.info(f"95% confidence interval: [{confidence_interval[0]:.4f}, {confidence_interval[1]:.4f}] m")
         if confidence_interval[0] > 0:
-            logger.info("结果解读: 置信区间完全在零以上，这进一步证实S3GM模型提供了稳健且显著的精度提升。")
+            logger.info("Interpretation: Confidence interval is entirely above zero, further confirming S3GM model provides robust and significant accuracy improvement.")
         else:
-            logger.info("结果解读: 置信区间包含零，这表明模型的改进可能不是稳健的。")
+            logger.info("Interpretation: Confidence interval includes zero, indicating the model improvement may not be robust.")
 
     except Exception as e:
-        logger.error(f"第四阶段统计分析失败: {str(e)}")
+        logger.error(f"Stage 4 statistical analysis failed: {str(e)}")
         raise
 
 def stage5_in_depth_analysis():
-    """第五阶段：模型在不同深度和地形条件下的性能分析"""
+    """Stage 5: Model performance analysis by depth and terrain zones"""
     try:
-        logger.info("开始执行第五阶段：深度和地形分区的详细性能分析")
+        logger.info("Starting Stage 5: Detailed performance analysis by depth and terrain zones")
 
-        # 1. 加载数据
-        logger.info("加载海图、RF和S3GM的2023年预测结果...")
+        # 1. Load data
+        logger.info("Loading nautical chart, RF and S3GM 2023 prediction results...")
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
@@ -1101,7 +1100,7 @@ def stage5_in_depth_analysis():
         if not os.path.exists(rf_pred_path):
             rf_pred_path_alt = 'results/classic_models/rf_time_series.npy'
             if not os.path.exists(rf_pred_path_alt):
-                 logger.error(f"RF预测文件未找到: {rf_pred_path} 或 {rf_pred_path_alt}")
+                 logger.error(f"RF prediction file not found: {rf_pred_path} or {rf_pred_path_alt}")
                  return
             else: # If saved as a list, load and get the last element
                  rf_preds_map = np.load(rf_pred_path_alt, allow_pickle=True)[-1]
@@ -1110,7 +1109,7 @@ def stage5_in_depth_analysis():
 
         s3gm_preds_map = np.load(s3gm_pred_path)
         
-        # 2. 对齐数据
+        # 2. Align data
         H, W = rf_preds_map.shape
         aligned_data = []
         for i, (y, x) in enumerate(coords):
@@ -1127,10 +1126,10 @@ def stage5_in_depth_analysis():
                         'x_idx': x_idx
                     })
         
-        logger.info(f"数据对齐后，用于分析的有效点数: {len(aligned_data)}")
+        logger.info(f"After alignment, valid points for analysis: {len(aligned_data)}")
 
-        # 3. 按深度区间分析
-        logger.info("\n--- 按深度区间分析模型性能 ---")
+        # 3. Analysis by depth zones
+        logger.info("\n--- Model performance analysis by depth zones ---")
         depth_bins = {
             'Shallow (0-10m)': (0, 10),
             'Intermediate (10-30m)': (10, 30),
@@ -1156,8 +1155,8 @@ def stage5_in_depth_analysis():
             print(f"| {name:<20} | RF    | {len(true):<4} | {rf_rmse:<8.2f} | {rf_mae:<8.2f} |")
             print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
 
-        # 4. 按地形坡度分析
-        logger.info("\n--- 按地形坡度分析模型性能 ---")
+        # 4. Analysis by terrain slope
+        logger.info("\n--- Model performance analysis by terrain slope ---")
         grad_y, grad_x = np.gradient(s3gm_preds_map)
         slope_map = np.sqrt(grad_y**2 + grad_x**2)
         
@@ -1193,89 +1192,86 @@ def stage5_in_depth_analysis():
             print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
             
     except Exception as e:
-        logger.error(f"第五阶段详细性能分析失败: {str(e)}")
+        logger.error(f"Stage 5 detailed performance analysis failed: {str(e)}")
         raise
 
 def main():
     try:
-        # 设置日志系统（移除这里的调用）
-        # setup_logging()  # 删除这行
-        
-        logger.info("开始执行水深反演程序...")
+        logger.info("Starting bathymetry inversion program...")
         
         args = parse_args()
         
-        # 初始化基本参数
+        # Initialize basic parameters
         aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
         gebco_years = range(2019, 2025)
         sentinel_years = range(2018, 2024)
         
         if args.stage == '1':
-            logger.info("执行第一阶段：数据预处理")
+            logger.info("Executing Stage 1: Data preprocessing")
             stage1_preprocessing(aoi, gebco_years, sentinel_years)
             
         elif args.stage == '1.5':
-            logger.info("执行第1.5阶段：经典模型训练")
+            logger.info("Executing Stage 1.5: Classic model training")
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
             classic_models = stage1_5_model_training(sentinel_time_series)
         
         elif args.stage == '1.8':
-            logger.info("执行第1.8阶段：经典模型验证")
+            logger.info("Executing Stage 1.8: Classic model validation")
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
             stage1_8_model_validation(sentinel_time_series)
                 
         elif args.stage == '2':
-            logger.info("执行第二阶段：S3GM模型处理")
-            # 加载预处理数据和训练好的模型参数
+            logger.info("Executing Stage 2: S3GM model processing")
+            # Load preprocessed data and trained model parameters
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
             gebco_time_series = np.load('intermediate_results/gebco_time_series.npy')
             
-            # 初始化系统
+            # Initialize system
             system = HybridBathymetrySystem(
                 region=aoi,
                 time_range={'gebco': gebco_years, 'sentinel': sentinel_years}
             )
             
-            # 执行第二阶段
+            # Execute Stage 2
             stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sentinel_years)
 
         elif args.stage == '3':
-            logger.info("执行第三阶段：结果后处理与可视化")
+            logger.info("Executing Stage 3: Post-processing and visualization")
             stage3_postprocessing()
 
         elif args.stage == '4':
-            logger.info("执行第四阶段：统计显著性分析")
+            logger.info("Executing Stage 4: Statistical significance analysis")
             stage4_statistical_analysis()
 
         elif args.stage == '5':
-            logger.info("执行第五阶段：深度和地形分区的详细性能分析")
+            logger.info("Executing Stage 5: Detailed performance analysis by depth and terrain zones")
             stage5_in_depth_analysis()
 
     except Exception as e:
-        logger.error(f"程序执行过程中发生错误: {str(e)}")
+        logger.error(f"Error occurred during program execution: {str(e)}")
         raise
 
 if __name__ == '__main__':
-    setup_logging()  # 只在这里调用一次
+    setup_logging()  # Only call once here
     main()
 
-# 运行第一阶段（数据预处理）
+# Run Stage 1 (Data preprocessing)
 # python run_bathymetry.py --stage 1
 
-# 运行第1.5阶段（经典模型训练）
+# Run Stage 1.5 (Classic model training)
 # python run_bathymetry.py --stage 1.5
 
-# 运行第1.8阶段（经典模型验证）
+# Run Stage 1.8 (Classic model validation)
 # python run_bathymetry.py --stage 1.8
 
-# 运行第二阶段（S3GM模型处理）
+# Run Stage 2 (S3GM model processing)
 # python run_bathymetry.py --stage 2
 
-# 运行第三阶段（结果后处理与可视化）
+# Run Stage 3 (Post-processing and visualization)
 # python run_bathymetry.py --stage 3
 
-# 运行第四阶段（统计分析）
+# Run Stage 4 (Statistical analysis)
 # python run_bathymetry.py --stage 4
 
-# 运行第五阶段（详细性能分析）
+# Run Stage 5 (Detailed performance analysis)
 # python run_bathymetry.py --stage 5

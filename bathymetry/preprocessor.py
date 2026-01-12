@@ -3,21 +3,21 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 import ee
 ee.Authenticate()
-ee.Initialize(project='fast-banner-452901-c8')
+ee.Initialize(project='YOUR_GEE_PROJECT_ID')
 import glob
 import os
 
 logger = logging.getLogger(__name__)
 
 class DataPreprocessor:
-    """数据预处理器"""
+    """Data preprocessor"""
     
     def __init__(self, region: Optional[ee.Geometry] = None):
         """
-        初始化预处理器
+        Initialize preprocessor
         
         Args:
-            region: 研究区域（可选）
+            region: Study area (optional)
         """
         self.region = region
         
@@ -29,24 +29,24 @@ class DataPreprocessor:
         measurement_coordinates: np.ndarray,        
         is_ee_image: bool = False
     ) -> Dict[str, Any]:
-        """数据预处理"""
+        """Data preprocessing"""
         try:
-            # 1. 遥感数据不需要标准化（经典模型内部会处理）
+            # 1. Remote sensing data doesn't need normalization (classic model handles internally)
             
-            # 2. GEBCO数据标准化（转换符号：负值水深->正值水深，正值陆地->负值陆地）
-            # 注意：不再需要手动转换符号，在_normalize_data中处理
+            # 2. GEBCO data normalization (sign conversion: negative depth -> positive depth, positive land -> negative land)
+            # Note: No longer need manual sign conversion, handled in _normalize_data
             normalized_gebco, gebco_stats = self._normalize_data(
                 gebco_data, 
                 data_type='gebco'
             )
             
-            # 3. 标准化稀疏观测点数据（海图数据）
+            # 3. Normalize sparse measurement data (nautical chart data)
             normalized_measurements, measurement_stats = self._normalize_data(
                 sparse_measurements,
                 data_type='chart'
             )
             
-            # 4. 创建测量点网格
+            # 4. Create measurement grid
             measurement_grid = self._create_measurement_grid(
                 normalized_measurements,
                 measurement_coordinates,
@@ -68,19 +68,19 @@ class DataPreprocessor:
             }
             
         except Exception as e:
-            logger.error(f"数据预处理失败: {str(e)}")
+            logger.error(f"Data preprocessing failed: {str(e)}")
             raise
             
     def _normalize_data(self, data: np.ndarray, data_type: str) -> Tuple[np.ndarray, Dict[str, float]]:
-        """使用 Min-Max 标准化将有效物理水深映射到 [-1, 1] 区间"""
+        """Use Min-Max normalization to map valid physical depths to [-1, 1] range"""
         try:
             normalized_data = data.astype(np.float32).copy() 
             
-            # 设定物理范围和特殊值
+            # Set physical range and special values
             min_phys = 0.0
             max_phys = 90.0
-            land_value_norm = 1.5 # 标准化后的陆地/无效值
-            eps = 1e-6 # 防止除零
+            land_value_norm = 1.5  # Normalized land/invalid value
+            eps = 1e-6  # Prevent division by zero
             
             stats = self._get_default_stats()
             stats['min_phys'] = min_phys
@@ -88,17 +88,17 @@ class DataPreprocessor:
             stats['land_value'] = land_value_norm
 
             if data_type == 'gebco':
-                # GEBCO: data < 0 是水深, data >= 0 是陆地
+                # GEBCO: data < 0 is depth, data >= 0 is land
                 sea_mask = data < 0
                 land_mask = ~sea_mask
                 if not np.any(sea_mask):
-                    logger.warning(f"GEBCO数据中没有有效的水深数据")
+                    logger.warning(f"No valid depth data in GEBCO data")
                     normalized_data.fill(land_value_norm) 
                     return normalized_data, stats
                 
-                sea_depths_phys = -data[sea_mask] # 转换为正物理深度
+                sea_depths_phys = -data[sea_mask]  # Convert to positive physical depth
                 
-                # 记录原始统计信息
+                # Record original statistics
                 stats.update({
                     'median': float(np.median(sea_depths_phys)), 
                     'iqr': float(np.percentile(sea_depths_phys, 75) - np.percentile(sea_depths_phys, 25)), 
@@ -108,26 +108,26 @@ class DataPreprocessor:
                     'max': float(sea_depths_phys.max())
                 })
                 
-                # 应用 Min-Max 标准化到 [-1, 1]
+                # Apply Min-Max normalization to [-1, 1]
                 normalized_sea = 2 * (sea_depths_phys - min_phys) / (max_phys - min_phys + eps) - 1
-                # Clip to ensure values are within [-1, 1] for numerical stability, though ideally they should be.
+                # Clip to ensure values are within [-1, 1] for numerical stability
                 normalized_sea = np.clip(normalized_sea, -1.0, 1.0)
                 
                 normalized_data[sea_mask] = normalized_sea
-                normalized_data[land_mask] = land_value_norm # 陆地设为特殊值
+                normalized_data[land_mask] = land_value_norm  # Set land to special value
 
             elif data_type in ['classic', 'chart']:
-                # Classic/Chart: data > 0 是水深, data <= 0 是无效/陆地
+                # Classic/Chart: data > 0 is depth, data <= 0 is invalid/land
                 valid_mask = data > 0
                 invalid_mask = ~valid_mask
                 if not np.any(valid_mask):
-                    logger.warning(f"{data_type}数据中没有有效的水深数据")
-                    normalized_data.fill(land_value_norm) # Fill with invalid value
+                    logger.warning(f"No valid depth data in {data_type} data")
+                    normalized_data.fill(land_value_norm)  # Fill with invalid value
                     return normalized_data, stats
 
-                valid_depths_phys = data[valid_mask] # 已经是正物理深度
+                valid_depths_phys = data[valid_mask]  # Already positive physical depth
                 
-                # 记录原始统计信息
+                # Record original statistics
                 stats.update({
                     'median': float(np.median(valid_depths_phys)), 
                     'iqr': float(np.percentile(valid_depths_phys, 75) - np.percentile(valid_depths_phys, 25)), 
@@ -135,19 +135,19 @@ class DataPreprocessor:
                     'q75': float(np.percentile(valid_depths_phys, 75)),
                     'min': float(valid_depths_phys.min()), 
                     'max': float(valid_depths_phys.max()),
-                    'invalid_value': land_value_norm # 使用统一的 land_value_norm
+                    'invalid_value': land_value_norm  # Use unified land_value_norm
                 })
                 
-                # 应用 Min-Max 标准化到 [-1, 1]
+                # Apply Min-Max normalization to [-1, 1]
                 normalized_valid = 2 * (valid_depths_phys - min_phys) / (max_phys - min_phys + eps) - 1
                 normalized_valid = np.clip(normalized_valid, -1.0, 1.0)
 
                 normalized_data[valid_mask] = normalized_valid
-                normalized_data[invalid_mask] = land_value_norm # 无效/陆地设为特殊值
+                normalized_data[invalid_mask] = land_value_norm  # Set invalid/land to special value
 
             # Final check for NaNs introduced during processing
             if np.isnan(normalized_data).any():
-                 logger.warning(f"{data_type} 标准化后包含NaN值，将替换为陆地/无效值 {land_value_norm}")
+                 logger.warning(f"{data_type} contains NaN after normalization, replacing with land/invalid value {land_value_norm}")
                  normalized_data = np.nan_to_num(normalized_data, nan=land_value_norm)
 
             self._check_normalized_data(normalized_data, data_type, stats)
@@ -155,41 +155,41 @@ class DataPreprocessor:
             return normalized_data, stats
 
         except Exception as e:
-            logger.error(f"数据标准化失败 ({data_type}): {str(e)}")
+            logger.error(f"Data normalization failed ({data_type}): {str(e)}")
             raise
 
     def _check_normalized_data(self, data: np.ndarray, data_type: str, stats: Dict[str, float]):
-        """增强的标准化数据检查"""
+        """Enhanced normalized data check"""
         # Check for NaNs before processing stats
         if np.isnan(data).any():
-            logger.warning(f"{data_type}数据检查时发现NaN值 (在填充后?)")
+            logger.warning(f"{data_type} data contains NaN during check (after filling?)")
 
-        land_value = stats.get('land_value', 1.5) # Get land/invalid value from stats
-        # 使用 isclose 检查陆地/无效值
-        valid_mask = ~np.isclose(data, land_value) & ~np.isnan(data) # Exclude land/invalid and NaNs
+        land_value = stats.get('land_value', 1.5)  # Get land/invalid value from stats
+        # Use isclose to check land/invalid values
+        valid_mask = ~np.isclose(data, land_value) & ~np.isnan(data)  # Exclude land/invalid and NaNs
 
-        logger.info(f"{data_type} 标准化后数据分布:")
+        logger.info(f"{data_type} normalized data distribution:")
         land_ratio = np.mean(np.isclose(data, land_value))
-        logger.info(f"- 陆地/无效值 ({land_value:.1f}) 比例: {land_ratio:.2%}")
+        logger.info(f"- Land/invalid value ({land_value:.1f}) ratio: {land_ratio:.2%}")
 
         if np.any(valid_mask):
             valid_data = data[valid_mask]
             percentiles = np.percentile(valid_data, [0, 25, 50, 75, 100]) if len(valid_data) > 0 else ["N/A"]*5
-            logger.info(f"- 有效值范围: [{valid_data.min():.4f}, {valid_data.max():.4f}]")
-            logger.info(f"- 有效值分位数 [0, 25, 50, 75, 100]: {percentiles}")
-            logger.info(f"- 原始物理值范围: [{stats.get('min', 'N/A'):.2f}, {stats.get('max', 'N/A'):.2f}]")
+            logger.info(f"- Valid value range: [{valid_data.min():.4f}, {valid_data.max():.4f}]")
+            logger.info(f"- Valid value percentiles [0, 25, 50, 75, 100]: {percentiles}")
+            logger.info(f"- Original physical value range: [{stats.get('min', 'N/A'):.2f}, {stats.get('max', 'N/A'):.2f}]")
             if 'iqr' in stats:
-                logger.info(f"- 原始物理值IQR: {stats['iqr']:.2f}")
+                logger.info(f"- Original physical value IQR: {stats['iqr']:.2f}")
         else:
-            logger.warning(f"- {data_type}数据中没有有效值 (非陆地/无效值)")
+            logger.warning(f"- No valid values in {data_type} data (non-land/invalid)")
 
 
     def _get_default_stats(self) -> Dict[str, float]:
-        """扩展的默认统计值"""
+        """Extended default statistics"""
         # Provide more robust defaults, especially min/max
         return {
             'median': 0.0, 'iqr': 1.0, 'q25': -0.5, 'q75': 0.5,
-            'land_value': 1.5, 'invalid_value': 1.5, # Keep both for clarity
+            'land_value': 1.5, 'invalid_value': 1.5,  # Keep both for clarity
             'min': 0.0, 'max': 0.0
         }
             
@@ -199,85 +199,85 @@ class DataPreprocessor:
         coordinates: np.ndarray,
         shape: Tuple[int, int]
     ) -> np.ndarray:
-        """创建测量点网格"""
+        """Create measurement grid"""
         try:
             H, W = shape
             grid = np.zeros((H, W))
             
-            # 将归一化坐标转换为像素坐标
+            # Convert normalized coordinates to pixel coordinates
             pixel_coords = np.zeros_like(coordinates)
-            pixel_coords[:, 0] = coordinates[:, 0] * (H - 1)  # y坐标
-            pixel_coords[:, 1] = coordinates[:, 1] * (W - 1)  # x坐标
+            pixel_coords[:, 0] = coordinates[:, 0] * (H - 1)  # y coordinate
+            pixel_coords[:, 1] = coordinates[:, 1] * (W - 1)  # x coordinate
             
-            # 四舍五入到最近的整数坐标
+            # Round to nearest integer coordinates
             pixel_coords = np.round(pixel_coords).astype(int)
             
-            # 边界检查
+            # Boundary check
             pixel_coords[:, 0] = np.clip(pixel_coords[:, 0], 0, H - 1)
             pixel_coords[:, 1] = np.clip(pixel_coords[:, 1], 0, W - 1)
             
-            # 填充网格
+            # Fill grid
             for coord, value in zip(pixel_coords, measurements):
                 grid[coord[0], coord[1]] = value
             
-            logger.info(f"创建了形状为 {shape} 的测量点网格")
+            logger.info(f"Created measurement grid with shape {shape}")
             return grid
             
         except Exception as e:
-            logger.error(f"测量点网格创建失败: {str(e)}")
+            logger.error(f"Measurement grid creation failed: {str(e)}")
             raise
             
     def get_sparse_points(self) -> Dict[str, np.ndarray]:
-        """获取海图稀疏观测点数据"""
+        """Get nautical chart sparse observation points"""
         try:
             if self.region is None:
-                raise ValueError("未设置研究区域，请在初始化时指定region参数")
+                raise ValueError("Study region not set, please specify region parameter during initialization")
             
-            # 获取研究区域边界
+            # Get study area bounds
             bounds = self.region.bounds().getInfo()
-            min_lon = bounds['coordinates'][0][0][0]  # 西边界
-            min_lat = bounds['coordinates'][0][0][1]  # 南边界
-            max_lon = bounds['coordinates'][0][2][0]  # 东边界
-            max_lat = bounds['coordinates'][0][2][1]  # 北边界
+            min_lon = bounds['coordinates'][0][0][0]  # West boundary
+            min_lat = bounds['coordinates'][0][0][1]  # South boundary
+            max_lon = bounds['coordinates'][0][2][0]  # East boundary
+            max_lat = bounds['coordinates'][0][2][1]  # North boundary
         
-            logger.info(f"正在获取区域 [{min_lon:.3f}, {min_lat:.3f}, {max_lon:.3f}, {max_lat:.3f}] 内的海图数据...")
+            logger.info(f"Retrieving nautical chart data within region [{min_lon:.3f}, {min_lat:.3f}, {max_lon:.3f}, {max_lat:.3f}]...")
         
-            # 读取海图数据
+            # Read nautical chart data
             chart_files = glob.glob(os.path.join('Official_nautical_chart', '*_sample.xyz'))
             if not chart_files:
-                raise FileNotFoundError("找不到海图数据文件")
+                raise FileNotFoundError("Nautical chart data files not found")
         
             points_data = []
             for file in chart_files:
                 data = np.loadtxt(file)
-                # 仅保留研究区域内的点
+                # Keep only points within study area
                 mask = ((data[:, 0] >= min_lon) & (data[:, 0] <= max_lon) & 
                        (data[:, 1] >= min_lat) & (data[:, 1] <= max_lat))
                 points_data.append(data[mask])
             
             if not points_data:
-                raise ValueError("在指定区域内未找到任何海图数据点")
+                raise ValueError("No nautical chart data points found in specified region")
             
             points_data = np.vstack(points_data)
         
-            # 提取坐标和深度
+            # Extract coordinates and depths
             lon = points_data[:, 0]
             lat = points_data[:, 1]
             depths = points_data[:, 2]
         
-            # 将地理坐标转换为归一化网格坐标 (0-1范围)
+            # Convert geographic coordinates to normalized grid coordinates (0-1 range)
             norm_coords = np.zeros((len(lon), 2))
             norm_coords[:, 0] = (lat - min_lat) / (max_lat - min_lat)
             norm_coords[:, 1] = (lon - min_lon) / (max_lon - min_lon)
         
-            logger.info(f"在研究区域内找到 {len(depths)} 个海图观测点")
-            logger.info(f"深度范围: {np.min(depths):.2f} 到 {np.max(depths):.2f} 米")
+            logger.info(f"Found {len(depths)} nautical chart observation points in study region")
+            logger.info(f"Depth range: {np.min(depths):.2f} to {np.max(depths):.2f} m")
         
             return {
-                'depths': depths,  # 返回原始深度值，不进行标准化
+                'depths': depths,  # Return original depth values without normalization
                 'coordinates': norm_coords
             }
         
         except Exception as e:
-            logger.error(f"获取海图数据失败: {str(e)}")
+            logger.error(f"Failed to retrieve nautical chart data: {str(e)}")
             raise

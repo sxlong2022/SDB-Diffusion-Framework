@@ -9,7 +9,7 @@ except Exception as e:
     ee.Initialize()
 
 import logging
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -17,50 +17,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def negative_pixels_mask(image):
-    """移除负值像素"""
+    """Remove negative pixels"""
     try:
-        # 使用列表形式选择波段
+        # Use list format to select bands
         bands = ['blue', 'green', 'red', 'nir']
         masks = [image.select([band]).gt(0) for band in bands]
         combined_mask = ee.Image.cat(masks).reduce(ee.Reducer.min())
         return image.updateMask(combined_mask)
     except Exception as e:
-        logger.error(f"负值像素移除失败: {str(e)}")
+        logger.error(f"Negative pixel removal failed: {str(e)}")
         return image
 
 def calculate_common_threshold(image_collection, region_of_interest, band='nir', scale=10):
-    """计算水体共同分割阈值"""
+    """Calculate common water segmentation threshold"""
     try:
-        # 确保band是字符串而不是列表
+        # Ensure band is a string, not a list
         band_name = band[0] if isinstance(band, list) else band
         return image_collection.map(lambda img: img.select(band_name)) \
             .reduce(ee.Reducer.percentile([5])) \
             .rename('threshold')
     except Exception as e:
-        logger.error(f"计算阈值失败: {str(e)}")
-        return ee.Image(0)  # 返回默认阈值
+        logger.error(f"Threshold calculation failed: {str(e)}")
+        return ee.Image(0)  # Return default threshold
 
 def calculate_nir_limits(image_collection, common_threshold, band='nir'):
-    """计算NIR反射率下限"""
+    """Calculate NIR reflectance lower limit"""
     try:
-        # 确保band是字符串而不是列表
+        # Ensure band is a string, not a list
         band_name = band[0] if isinstance(band, list) else band
         return {
             'nir_limit': image_collection.select(band_name).min(),
             'image_ids': image_collection.aggregate_array('system:index')
         }
     except Exception as e:
-        logger.error(f"计算NIR限值失败: {str(e)}")
+        logger.error(f"NIR limit calculation failed: {str(e)}")
         return {'nir_limit': ee.Image(0), 'image_ids': []}
 
 def calculate_weight(image, nir_lower, common_threshold, p_value=4):
-    """计算单个影像的权重"""
+    """Calculate weight for a single image"""
     try:
-        # 使用列表格式选择波段
+        # Use list format to select band
         nir_band = image.select(['nir'])
         water_mask = nir_band.lt(common_threshold)
         
-        # 计算权重
+        # Calculate weight
         nir_diff = nir_band.subtract(nir_lower)
         threshold_diff = common_threshold.subtract(nir_lower)
         weight = ee.Image(1.0).subtract(nir_diff.divide(threshold_diff)).pow(p_value)
@@ -68,16 +68,16 @@ def calculate_weight(image, nir_lower, common_threshold, p_value=4):
         return weight.updateMask(water_mask)
         
     except Exception as e:
-        logger.error(f"权重计算失败: {str(e)}")
-        return ee.Image(1.0)  # 返回默认权重
+        logger.error(f"Weight calculation failed: {str(e)}")
+        return ee.Image(1.0)  # Return default weight
 
 def multi_temporal_weighted_composition(image_collection, region_of_interest, p=4, band='nir', scale=10):
-    """执行多时相加权组合"""
+    """Perform multi-temporal weighted composition"""
     try:
-        # 确保band是列表格式
+        # Ensure band is in list format
         band_name = [band] if isinstance(band, str) else band
         
-        # 计算共同阈值和NIR限值
+        # Calculate common threshold and NIR limits
         common_threshold = calculate_common_threshold(
             image_collection, 
             region_of_interest,
@@ -91,12 +91,12 @@ def multi_temporal_weighted_composition(image_collection, region_of_interest, p=
             band=band_name
         )
         
-        # 对每个波段单独处理
+        # Process each band separately
         bands = ['blue', 'green', 'red', 'nir']
         composite_bands = []
         
         for band in bands:
-            # 计算加权和
+            # Calculate weighted sum
             weighted_sum = image_collection.map(
                 lambda img: img.select([band]).multiply(
                     calculate_weight(
@@ -110,33 +110,33 @@ def multi_temporal_weighted_composition(image_collection, region_of_interest, p=
             
             composite_bands.append(weighted_sum)
         
-        # 合并所有波段
+        # Merge all bands
         return ee.Image.cat(composite_bands)
         
     except Exception as e:
-        logger.error(f"多时相加权组合失败: {str(e)}")
+        logger.error(f"Multi-temporal weighted composition failed: {str(e)}")
         return image_collection.first()
 
 def enhanced_water_segmentation(image, common_threshold, region_of_interest, band='nir'):
-    """增强的水体分割模块"""
-    # 使用重命名后的波段名称
+    """Enhanced water segmentation module"""
+    # Use renamed band names
     return image.select([band]).lt(common_threshold)
 
 def holes_interpolation(image):
-    """对影像中的空洞进行插值填充"""
+    """Interpolate and fill holes in the image"""
     try:
-        # 使用重命名后的波段
+        # Use renamed bands
         bands = ['blue', 'green', 'red', 'nir']
         interpolated_bands = []
         
         for band in bands:
-            # 选择单个波段（使用列表格式）
+            # Select single band (using list format)
             single_band = image.select([band])
             
-            # 创建掩膜
+            # Create mask
             mask = single_band.mask()
             
-            # 对单个波段进行插值
+            # Interpolate single band
             filled = single_band.unmask()
             filled = filled.focal_mean(
                 radius=2,
@@ -144,32 +144,32 @@ def holes_interpolation(image):
                 units='pixels'
             ).updateMask(mask.Not())
             
-            # 合并原始数据和填充数据
+            # Merge original data and filled data
             interpolated = ee.Image(
                 single_band.unmask().where(mask.Not(), filled)
             ).rename(band)
             
             interpolated_bands.append(interpolated)
         
-        # 合并所有波段
+        # Merge all bands
         return ee.Image.cat(interpolated_bands)
         
     except Exception as e:
-        logger.error(f"空洞插值失败: {str(e)}")
+        logger.error(f"Hole interpolation failed: {str(e)}")
         return image
 
 def mean_filtering(image):
-    """应用均值滤波"""
+    """Apply mean filtering"""
     try:
-        # 使用重命名后的波段
+        # Use renamed bands
         bands = ['blue', 'green', 'red', 'nir']
         filtered_bands = []
         
         for band in bands:
-            # 选择单个波段（使用列表格式）
+            # Select single band (using list format)
             single_band = image.select([band])
             
-            # 应用均值滤波
+            # Apply mean filtering
             filtered = single_band.focal_mean(
                 radius=1,
                 kernelType='circle',
@@ -178,15 +178,15 @@ def mean_filtering(image):
             
             filtered_bands.append(filtered)
         
-        # 合并所有波段
+        # Merge all bands
         return ee.Image.cat(filtered_bands)
         
     except Exception as e:
-        logger.error(f"均值滤波失败: {str(e)}")
+        logger.error(f"Mean filtering failed: {str(e)}")
         return image
 
 def validate_results(result_image, reference_points, band='B8'):
-    """验证结果的准确性"""
+    """Validate result accuracy"""
     accuracy = result_image.select(band).reduceRegion(
         reducer=ee.Reducer.accuracy(),
         geometry=reference_points,
@@ -196,17 +196,17 @@ def validate_results(result_image, reference_points, band='B8'):
     return accuracy
 
 def seasonal_water_quality_adjustment(image):
-    """季节性水质调整"""
+    """Seasonal water quality adjustment"""
     try:
-        # 1. 计算NDWI (使用列表格式选择波段)
+        # 1. Calculate NDWI (using list format to select bands)
         nir = image.select(['nir'])
         green = image.select(['green'])
         ndwi = nir.subtract(green).divide(nir.add(green))
         
-        # 2. 创建调整因子
+        # 2. Create adjustment factor
         adjustment_factor = ee.Image(1.0).add(ndwi)
         
-        # 3. 分别调整每个波段
+        # 3. Adjust each band separately
         bands = ['blue', 'green', 'red', 'nir']
         adjusted_bands = []
         
@@ -214,39 +214,39 @@ def seasonal_water_quality_adjustment(image):
             adjusted = image.select([band]).multiply(adjustment_factor).rename(band)
             adjusted_bands.append(adjusted)
         
-        # 4. 合并调整后的波段
+        # 4. Merge adjusted bands
         return ee.Image.cat(adjusted_bands)
         
     except Exception as e:
-        logger.error(f"季节性水质调整失败: {str(e)}")
+        logger.error(f"Seasonal water quality adjustment failed: {str(e)}")
         return image
 
 def verify_projections(image):
-    """验证投影的服务器端函数"""
+    """Server-side function to verify projections"""
     try:
-        # 获取基准投影（使用'nir'波段）
+        # Get reference projection (using 'nir' band)
         base_projection = image.select('nir').projection()
         base_crs = base_projection.crs()
         
-        # 创建一个函数来验证每个波段的投影
+        # Create function to verify each band's projection
         def check_band_projection(band_name):
             band_projection = image.select(band_name).projection()
             band_crs = band_projection.crs()
             return ee.String(band_crs).compareTo(ee.String(base_crs)).eq(0)
         
-        # 获取所有波段名称
+        # Get all band names
         bands = image.bandNames()
         
-        # 在服务器端验证所有波段的投影
+        # Verify all band projections on server side
         projection_checks = bands.map(lambda band: check_band_projection(band))
         
-        # 如果所有检查都通过，返回原始图像
+        # If all checks pass, return original image
         all_valid = projection_checks.reduce(ee.Reducer.min())
         
         return image.set('valid_projections', all_valid)
         
     except Exception as e:
-        logger.error(f"投影验证失败: {str(e)}")
+        logger.error(f"Projection verification failed: {str(e)}")
         return image.set('valid_projections', 0)
 
 def apply_miwc(
@@ -257,33 +257,33 @@ def apply_miwc(
     scale: int = 10
 ) -> ee.Image:
     try:
-        logger.info("开始应用MIWC算法...")
+        logger.info("Starting MIWC algorithm...")
         
-        # 验证输入集合
+        # Validate input collection
         if image_collection.size().getInfo() == 0:
-            raise ValueError("输入影像集合为空")
+            raise ValueError("Input image collection is empty")
         
-        # 验证波段名称
+        # Validate band names
         first_image = image_collection.first()
         available_bands = first_image.bandNames().getInfo()
         required_bands = ['blue', 'green', 'red', 'nir']
         
         if not all(band in available_bands for band in required_bands):
-            raise ValueError(f"缺少必要的波段。可用波段: {available_bands}")
+            raise ValueError(f"Missing required bands. Available bands: {available_bands}")
         
-        # 确保band_to_process是字符串
+        # Ensure band_to_process is a string
         band_name = band_to_process[0] if isinstance(band_to_process, list) else band_to_process   
         
-        # Step 1: 负像素掩膜
-        logger.info("1. 移除负值像素...")
+        # Step 1: Negative pixel mask
+        logger.info("1. Removing negative pixels...")
         masked_collection = image_collection.map(negative_pixels_mask)
         
-        # Step 2: 季节性水质调整（额外步骤，增强处理效果）
-        logger.info("2. 应用季节性水质调整...")
+        # Step 2: Seasonal water quality adjustment (additional step for enhanced processing)
+        logger.info("2. Applying seasonal water quality adjustment...")
         adjusted_collection = masked_collection.map(seasonal_water_quality_adjustment)
         
-        # Step 3: 计算增强版阈值
-        logger.info("3. 计算公共阈值...")
+        # Step 3: Calculate enhanced threshold
+        logger.info("3. Calculating common threshold...")
         common_threshold = calculate_common_threshold(
             adjusted_collection,
             aoi,
@@ -291,16 +291,16 @@ def apply_miwc(
             scale=scale
         )
         
-        # Step 4: 计算近红外限值
-        logger.info("4. 计算NIR限值...")
+        # Step 4: Calculate NIR limits
+        logger.info("4. Calculating NIR limits...")
         nir_limits = calculate_nir_limits(
             adjusted_collection,
             common_threshold,
             band=band_name
         )
         
-        # Step 5: 执行加权组合
-        logger.info("5. 执行多时相加权组合...")
+        # Step 5: Perform weighted composition
+        logger.info("5. Performing multi-temporal weighted composition...")
         composite = multi_temporal_weighted_composition(
             adjusted_collection,
             aoi,
@@ -309,22 +309,22 @@ def apply_miwc(
             scale=scale
         )
         
-        # 确保组合结果是ee.Image类型
+        # Ensure composite result is ee.Image type
         composite = ee.Image(composite)
         
-        # Step 6: 空洞插值
-        logger.info("6. 插值填充空洞...")
+        # Step 6: Hole interpolation
+        logger.info("6. Interpolating holes...")
         interpolated = holes_interpolation(composite)
         
-        # Step 7: 均值滤波
-        logger.info("7. 应用均值滤波...")
+        # Step 7: Mean filtering
+        logger.info("7. Applying mean filtering...")
         filtered = mean_filtering(interpolated)
         
-        # 验证投影一致性
-        logger.info("验证投影一致性...")
+        # Verify projection consistency
+        logger.info("Verifying projection consistency...")
         verified = verify_projections(filtered)
         
-        # 在返回结果之前，确保包含所有必要的波段
+        # Before returning results, ensure all necessary bands are included
         first_image = image_collection.first()
         required_bands = ['blue', 'green']
         band_images = []
@@ -333,10 +333,10 @@ def apply_miwc(
             band_data = first_image.select([band])
             band_images.append(band_data)
         
-        # 合并所有波段
+        # Merge all bands
         result = ee.Image.cat(band_images)
         
-        # 添加元数据
+        # Add metadata
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         result = result.set({
             'processing_timestamp': timestamp,
@@ -345,17 +345,17 @@ def apply_miwc(
             'aoi_bounds': aoi.bounds().getInfo()
         })
         
-        logger.info("MIWC处理完成")
+        logger.info("MIWC processing completed")
         return result
         
     except Exception as e:
-        logger.error(f"MIWC处理失败: {str(e)}")
+        logger.error(f"MIWC processing failed: {str(e)}")
         return image_collection.first()
 
 def main():
-    """主执行函数"""
-    # 配置参数
-    aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])  # 舟山群岛研究区域
+    """Main execution function"""
+    # Configuration parameters
+    aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])  # Zhoushan Islands study area
     date_range = ('2019-01-01', '2019-12-31')
     p_value = 4
     band_to_process = 'B8'
@@ -363,14 +363,14 @@ def main():
     cloud_cover_threshold = 50
 
     try:
-        # 创建图像集合
+        # Create image collection
         logger.info("Filtering image collection...")
         image_collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(aoi) \
             .filterDate(date_range[0], date_range[1]) \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_cover_threshold))
 
-        # 确保集合不为空
+        # Ensure collection is not empty
         image_count = image_collection.size().getInfo()
         logger.info(f"Found {image_count} images")
 
@@ -378,24 +378,24 @@ def main():
             logger.error("No images found in collection")
             return
 
-        # 预处理：移除负值
+        # Preprocessing: remove negative values
         logger.info("Masking negative pixels...")
         masked_collection = image_collection.map(negative_pixels_mask)
 
-        # 季节性水质调整
+        # Seasonal water quality adjustment
         logger.info("Applying seasonal water quality adjustment...")
         adjusted_collection = masked_collection.map(seasonal_water_quality_adjustment)
 
-        # 计算增强版阈值
+        # Calculate enhanced threshold
         logger.info("Calculating enhanced threshold...")
         common_threshold = calculate_common_threshold(
             adjusted_collection,
             aoi,
-            band=[band_to_process],  # 使用列表形式
+            band=[band_to_process],  # Use list format
             scale=scale
         )
 
-        # 计算 NIR limits
+        # Calculate NIR limits
         logger.info("Calculating NIR limits...")
         nir_limits = calculate_nir_limits(
             adjusted_collection, 
@@ -403,7 +403,7 @@ def main():
             band=[band_to_process]
         )
 
-        # 执行加权组合
+        # Perform weighted composition
         logger.info("Performing weighted composition...")
         composite = multi_temporal_weighted_composition(
             adjusted_collection,
@@ -413,18 +413,18 @@ def main():
             scale=scale
         )
 
-        # 确保组合是 ee.Image
+        # Ensure composite is ee.Image
         composite = ee.Image(composite)
 
-        # 插值填充空洞
+        # Interpolate holes
         logger.info("Interpolating holes...")
         interpolated_composite = holes_interpolation(composite.select(band_to_process))
 
-        # 应用均值滤波
+        # Apply mean filtering
         logger.info("Applying mean filter...")
         filtered_composite = mean_filtering(interpolated_composite)
 
-        # 导出结果
+        # Export results
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         export_task = ee.batch.Export.image.toDrive(
             image=filtered_composite,
@@ -438,18 +438,18 @@ def main():
             }
         )
 
-        # 启动导出任务
+        # Start export task
         export_task.start()
         logger.info("Export task started. Check Earth Engine Tasks panel for progress.")
 
-        # 可选：添加显示参数
+        # Optional: add display parameters
         vis_params = {
             'min': 0,
             'max': 3000,
             'bands': [band_to_process]
         }
 
-        # 返回处理结果和统计信息
+        # Return processing results and statistics
         results = {
             'composite': filtered_composite,
             'visualization_params': vis_params,
@@ -479,7 +479,7 @@ def main():
 
         logger.info("MIWC processing completed successfully")
         
-        # 打印详细的处理统计信息
+        # Print detailed processing statistics
         logger.info("\nProcessing Statistics:")
         logger.info(f"Total images processed: {results['processing_stats']['image_counts']['total']}")
         logger.info(f"Common threshold value: {results['processing_stats']['thresholds']['common']}")
@@ -497,7 +497,7 @@ if __name__ == '__main__':
     try:
         results = main()
         
-        # 打印处理统计信息
+        # Print processing statistics
         logger.info("Processing Statistics:")
         for key, value in results['processing_stats'].items():
             logger.info(f"{key}: {value}")

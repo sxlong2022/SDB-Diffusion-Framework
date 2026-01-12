@@ -22,6 +22,8 @@ A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Ma
 │   ├── preprocessor.py            # Data preprocessing
 │   ├── s3gm_wrapper.py            # S³GM wrapper
 │   ├── s3gm_config.py             # S³GM configuration
+│   ├── main.py                    # Hybrid system main class
+│   ├── gpu_memory.py              # GPU memory management
 │   └── utils.py                   # Utility functions
 ├── configs/                       # Configuration files
 │   ├── classic_models.yaml
@@ -84,13 +86,14 @@ If you use this code, please cite:
   title={A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Machine Learning with Spatio-Temporal Generative Diffusion Models},
   author={Song, Xiaolong and Liu, Boliang and Xiao, Zhong and Xu, Haijue and Bai, Yuchuan},
   journal={Computers \& Geosciences},
-  year={2025}
+  year={2025},
+  note={Under Review}
 }
 ```
 
 ## Acknowledgements
 
-This implementation builds upon the S³GM framework by [Li et al. (2024)](https://github.com/Rose-STL-Lab/S3GM).
+This implementation builds upon the S³GM framework by [Li et al. (2024)](https://github.com/lzy12301/S3GM).
 
 ## License
 

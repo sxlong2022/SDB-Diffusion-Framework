@@ -5,28 +5,28 @@ import logging
 logger = logging.getLogger(__name__)
 
 class GPUMemoryManager:
-    """GPU内存管理器"""
+    """GPU Memory Manager"""
     
     @staticmethod
     def clear_gpu_memory():
-        """清理GPU内存"""
+        """Clear GPU memory"""
         try:
             if torch.cuda.is_available():
-                # 清理PyTorch缓存
+                # Clear PyTorch cache
                 torch.cuda.empty_cache()
                 
-                # 强制垃圾回收
+                # Force garbage collection
                 gc.collect()
                 
-                logger.info("GPU内存清理完成")
+                logger.info("GPU memory cleanup completed")
                 
         except Exception as e:
-            logger.error(f"GPU内存清理失败: {str(e)}")
+            logger.error(f"GPU memory cleanup failed: {str(e)}")
             raise
             
     @staticmethod
     def get_gpu_memory_info():
-        """获取GPU内存使用信息"""
+        """Get GPU memory usage information"""
         try:
             if torch.cuda.is_available():
                 device = torch.cuda.current_device()
@@ -45,5 +45,5 @@ class GPUMemoryManager:
                 return None
                 
         except Exception as e:
-            logger.error(f"获取GPU内存信息失败: {str(e)}")
+            logger.error(f"Failed to get GPU memory info: {str(e)}")
             raise

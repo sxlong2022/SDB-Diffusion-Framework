@@ -1,4 +1,4 @@
-"""S3GM模型配置文件"""
+"""S3GM Model Configuration File"""
 from dataclasses import dataclass, field
 from typing import Tuple, Optional, List, Dict, Any
 import os
@@ -8,15 +8,15 @@ import yaml
 
 @dataclass
 class S3GMConfig:
-    # 模型基本参数
-    num_components: int = 5  # 1(经典) + 1(GEBCO) + 2(海图) + 1(掩码)
+    # Basic model parameters
+    num_components: int = 5  # 1(classic) + 1(GEBCO) + 2(chart) + 1(mask)
     image_size: int = 64
     num_frames: int = 6     # 2018-2023
     version: str = "bathymetry_v0"
     data: str = "bathymetry"
     parameterization: str = "v"
 
-    # 模型架构参数
+    # Model architecture parameters
     model_channels: int = 128
     num_res_blocks: int = 4
     attention_resolutions: Tuple[int, ...] = (4, 8, 16)
@@ -27,23 +27,23 @@ class S3GMConfig:
     use_checkpoint: bool = True
     use_scale_shift_norm: bool = True
 
-    # 通道模态配置
-    channel_modal: List[int] = field(default_factory=lambda: [1, 1, 2, 1])  # [经典模型, GEBCO, 海图(深度+掩码), 统一掩码]
+    # Channel modal configuration
+    channel_modal: List[int] = field(default_factory=lambda: [1, 1, 2, 1])  # [classic model, GEBCO, chart(depth+mask), unified mask]
     num_modals: int = 1
 
-    # SDE配置
+    # SDE configuration
     sde_type: str = 'vpsde'
     beta_min: float = 0.1
     beta_max: float = 10.0
     num_scales: int = 1000
 
-    # 扩散模型参数
+    # Diffusion model parameters
     ema_rate: float = 0.999
     predictor: str = "reverse_diffusion"
     corrector: str = "langevin"
     probability_flow: bool = True
 
-    # 采样参数
+    # Sampling parameters
     sampling: Dict[str, Any] = field(default_factory=lambda: {
         'alpha': 1,
         'gamma1': 5,
@@ -56,16 +56,16 @@ class S3GMConfig:
         'overlap': 2
     })
 
-    # RPE相关参数
+    # RPE related parameters
     beta: int = 32
     use_rpe_net: bool = True
     time_embed_dim: int = 256
 
-    # 时序处理参数
+    # Temporal processing parameters
     time_decay: float = 0.12
     spatial_decay: float = 0.05
 
-    # 性能优化参数
+    # Performance optimization parameters
     use_fp16: bool = True
     use_amp: bool = True
     memory_efficient: bool = True
@@ -74,30 +74,30 @@ class S3GMConfig:
     batch_size_override: int = 1
     requires_grad: bool = True
 
-    # EMA相关参数
+    # EMA related parameters
     use_ema: bool = True
     ema_decay: float = 0.9999
     
-    # VESDE参数
+    # VESDE parameters
     sigma_min: float = 0.002
     sigma_max: float = 10
     
-    # 数值稳定性参数
+    # Numerical stability parameters
     eps: float = 1.0e-12
 
-    # 采样相关参数
+    # Sampling related parameters
     num_samples: int = 1
     num_samples_train: int = 1000
     num_samples_val: int = 1000
     train_split: float = 0.9
 
-    # 数据处理参数
+    # Data processing parameters
     land_value: float = 1.5
 
-    # 物理约束参数
+    # Physics constraint parameters
     physics_guide: bool = False
 
-    # 稳定性参数
+    # Stability parameters
     stability: Dict[str, Any] = field(default_factory=lambda: {
         'grad_clip': 1.0,
         'check_grad_interval': 5,
@@ -108,7 +108,7 @@ class S3GMConfig:
         'gradient_clip_dps': 10.0
     })
 
-    # 裁剪参数
+    # Clipping parameters
     clipping: Dict[str, Any] = field(default_factory=lambda: {
         'use_dynamic': True,
         'percentile_range': [1, 99],
@@ -116,7 +116,7 @@ class S3GMConfig:
         'land_threshold': 0.1
     })
 
-    # 权重参数
+    # Weight parameters
     weights: Dict[str, Any] = field(default_factory=lambda: {
         'spatial_min': 0.3,
         'spatial_max': 1.0,
@@ -124,7 +124,7 @@ class S3GMConfig:
         'temporal_max': 1.0
     })
 
-    # 范围适配配置
+    # Range adaptation configuration
     range_adaptation: Dict[str, Any] = field(default_factory=lambda: {
         'enabled': True,
         'use_mixed_activation': True,
@@ -134,7 +134,7 @@ class S3GMConfig:
         'attention_scale_factor': 0.8
     })
 
-    # 输入通道权重
+    # Input channel weights
     input_weights: Dict[str, Any] = field(default_factory=lambda: {
         'classic': 0.7,
         'gebco': 0.3
@@ -197,19 +197,19 @@ def load_config(config_path: Optional[str] = None) -> S3GMConfig:
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                       'configs', config_path)
     try:
-        print(f"INFO - 尝试加载配置文件: {config_path}")
+        print(f"INFO - Attempting to load config file: {config_path}")
         if not os.path.exists(config_path):
-            print(f"ERROR - 配置文件不存在于路径: {config_path}")
+            print(f"ERROR - Config file does not exist at path: {config_path}")
         return S3GMConfig.from_yaml(config_path)
     except Exception as e:
-        print(f"ERROR - 加载配置文件 '{config_path}' 失败: {str(e)}")
+        print(f"ERROR - Failed to load config file '{config_path}': {str(e)}")
         import traceback
         print(traceback.format_exc())
-        print("INFO - 回退到使用默认配置")
+        print("INFO - Falling back to default configuration")
         return S3GMConfig()
 
 def validate_config_consistency():
-    """验证配置文件与默认值的一致性"""
+    """Validate consistency between config file and default values"""
     yaml_config = S3GMConfig.from_yaml('configs/s3gm_default.yaml')
     default_config = S3GMConfig()
     
@@ -218,7 +218,7 @@ def validate_config_consistency():
         default_value = getattr(default_config, field.name)
         if yaml_value != default_value:
             logger.warning(
-                f"配置不一致: {field.name}\n"
-                f"  yaml值: {yaml_value}\n"
-                f"  默认值: {default_value}"
+                f"Config inconsistency: {field.name}\n"
+                f"  yaml value: {yaml_value}\n"
+                f"  default value: {default_value}"
             )

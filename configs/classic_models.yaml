@@ -1,40 +1,40 @@
-# 水深反演经典模型参数配置
+# Bathymetry Inversion Classic Model Parameter Configuration
 
-# 对数转换线性模型(LLM)参数
+# Log-transformed Linear Model (LLM) parameters
 llm_params:
-  a0: 0.0  # 截距
-  a1: 1.0  # 蓝波段系数
-  a2: 1.0  # 绿波段系数
+  a0: 0.0  # Intercept
+  a1: 1.0  # Blue band coefficient
+  a2: 1.0  # Green band coefficient
   R_inf:
-    blue: 0.0  # 蓝波段深水反射率
-    green: 0.0  # 绿波段深水反射率
+    blue: 0.0  # Blue band deep water reflectance
+    green: 0.0  # Green band deep water reflectance
 
-# 随机森林模型(RF)参数
+# Random Forest Model (RF) parameters
 rf_params:
-  # 模型结构参数
+  # Model structure parameters
   model_params:
-    n_estimators: 500        # 树的数量
-    max_depth: 25           # 最大深度
-    min_samples_split: 2    # 分裂所需最小样本数
-    min_samples_leaf: 1     # 叶节点最小样本数
-    max_features: 'sqrt'    # 特征选择方式
-    bootstrap: true         # 使用bootstrap采样
-    random_state: 42        # 随机种子
-    n_jobs: -1             # 并行处理
-    oob_score: true        # 启用袋外评分
+    n_estimators: 500        # Number of trees
+    max_depth: 25           # Maximum depth
+    min_samples_split: 2    # Minimum samples required to split
+    min_samples_leaf: 1     # Minimum samples at leaf node
+    max_features: 'sqrt'    # Feature selection method
+    bootstrap: true         # Use bootstrap sampling
+    random_state: 42        # Random seed
+    n_jobs: -1             # Parallel processing
+    oob_score: true        # Enable out-of-bag score
 
-  # 特征工程参数
+  # Feature engineering parameters
   feature_engineering:
     normalization:
-      use_standard_scaling: true  # 使用标准化缩放
+      use_standard_scaling: true  # Use standard scaling
     
     band_ratio:
-      use_log_transform: true    # 使用对数变换
+      use_log_transform: true    # Use log transform
     
     depth_index:
-      use_normalized_bands: true # 使用标准化后的波段
+      use_normalized_bands: true # Use normalized bands
 
-  # 特征重要性（训练时更新）
+  # Feature importance (updated during training)
   feature_importances:
     blue: 0.0
     green: 0.0
@@ -44,41 +44,41 @@ rf_params:
     log_ratio: 0.0
     depth_index: 0.0
 
-# 对数转换比值模型(LRM)参数
+# Log-transformed Ratio Model (LRM) parameters
 lrm_params:
-  m0: 0.0  # 偏移系数
-  m1: 1.0  # 比值系数
-  n: 1000.0  # 固定常数
+  m0: 0.0  # Offset coefficient
+  m1: 1.0  # Ratio coefficient
+  n: 1000.0  # Fixed constant
 
-# 数据预处理参数
+# Data preprocessing parameters
 preprocessing:
-  deep_water_percentile: 90  # 深水百分位数（用于LLM）
-  outlier_threshold: 2.5     # 异常值阈值（标准差倍数）
-  min_depth: 0.1            # 最小水深（米）
-  max_depth: 75.0           # 最大水深（米）
+  deep_water_percentile: 90  # Deep water percentile (for LLM)
+  outlier_threshold: 2.5     # Outlier threshold (standard deviation multiplier)
+  min_depth: 0.1            # Minimum depth (meters)
+  max_depth: 75.0           # Maximum depth (meters)
   depth_limits:
-    min_depth: 0.1       # 最小水深（米）
-    max_depth: 75.0      # 最大水深（米）
+    min_depth: 0.1       # Minimum depth (meters)
+    max_depth: 75.0      # Maximum depth (meters)
   
   data_validation:
     depth_range:
-      min_depth: 0.1     # 最小水深（米）
-      max_depth: 75.0    # 最大水深（米）
+      min_depth: 0.1     # Minimum depth (meters)
+      max_depth: 75.0    # Maximum depth (meters)
     band_values:
-      min_value: 0.0     # 波段最小值
-      remove_negatives: true  # 移除负值
+      min_value: 0.0     # Band minimum value
+      remove_negatives: true  # Remove negative values
 
-# 训练参数
+# Training parameters
 training:
-  train_ratio: 0.8       # 训练数据比例
-  validation_ratio: 0.1  # 验证数据比例
-  random_seed: 42        # 随机种子
+  train_ratio: 0.8       # Training data ratio
+  validation_ratio: 0.1  # Validation data ratio
+  random_seed: 42        # Random seed
   early_stopping:
-    patience: 10         # 早停轮数
-    min_delta: 0.001    # 最小改善阈值
+    patience: 10         # Early stopping patience
+    min_delta: 0.001    # Minimum improvement threshold
 
-# 日志记录参数
+# Logging parameters
 logging:
-  log_feature_importance: true    # 记录特征重要性
-  log_training_stats: true        # 记录训练统计信息
-  log_prediction_stats: true      # 记录预测统计信息
+  log_feature_importance: true    # Log feature importance
+  log_training_stats: true        # Log training statistics
+  log_prediction_stats: true      # Log prediction statistics
