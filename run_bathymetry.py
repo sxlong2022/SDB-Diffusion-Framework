@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 import ee
 ee.Authenticate()
-ee.Initialize(project='fast-banner-452901-c8')
+ee.Initialize(project='YOUR_GEE_PROJECT_ID')
 from datetime import datetime
 from data_acquisition_preprocessing import (
     get_sentinel2_images,
@@ -312,7 +312,7 @@ def stage1_8_model_validation(sentinel_time_series):
             import ee
             if not ee.data._credentials:
                  ee.Authenticate()
-                 ee.Initialize(project='fast-banner-452901-c8')
+                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
         except ImportError:
              logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
              raise
@@ -685,7 +685,7 @@ def stage3_postprocessing():
             import ee
             if not ee.data._credentials:
                  ee.Authenticate()
-                 ee.Initialize(project='fast-banner-452901-c8')
+                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
         except ImportError:
              logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
              raise
