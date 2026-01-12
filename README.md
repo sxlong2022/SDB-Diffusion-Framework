@@ -37,8 +37,8 @@ A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Ma
 ## Requirements
 
 - Python 3.9
-- PyTorch 2.0.1
-- CUDA 11.8
+- PyTorch ≥2.0.1
+- CUDA 12.4
 - NVIDIA GPU with ≥6GB VRAM
 
 ## Installation
