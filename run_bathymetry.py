@@ -26,6 +26,7 @@ from typing import List, Dict, Optional, Tuple, Union
 from PIL import Image
 import matplotlib.gridspec
 import matplotlib.ticker as mticker
+from scipy.stats import wilcoxon
 
 # 配置日志
 logging.basicConfig(
@@ -54,8 +55,8 @@ def parse_args():
     parser.add_argument(
         '--stage',
         type=str,
-        choices=['1', '1.5', '1.8','2', '3'],
-        help='处理阶段：1=数据预处理，1.5=经典模型训练，1.8=经典模型验证，2=S3GM模型处理，3=结果后处理与可视化'
+        choices=['1', '1.5', '1.8','2', '3', '4', '5'],
+        help='处理阶段：1=数据预处理，1.5=经典模型训练，1.8=经典模型验证，2=S3GM模型处理，3=结果后处理与可视化, 4=统计显著性分析, 5=深度和地形分区的详细性能分析'
     )
     return parser.parse_args()
 
@@ -988,6 +989,213 @@ def save_results(depths, years, output_dir, chart_stats):
         logger.error(f"保存结果失败: {str(e)}")
         raise
 
+def stage4_statistical_analysis():
+    """第四阶段：统计显著性分析"""
+    try:
+        logger.info("开始执行第四阶段：统计显著性分析")
+
+        # 1. 加载真实海图数据 (Ground Truth)
+        logger.info("加载海图数据...")
+        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        preprocessor = DataPreprocessor(region=aoi)
+        nautical_charts = preprocessor.get_sparse_points()
+        true_depths_all = np.abs(nautical_charts['depths'])
+        coords = nautical_charts['coordinates']
+        logger.info(f"成功加载 {len(true_depths_all)} 个海图测量点")
+
+        # 2. 加载2023年的模型预测结果
+        logger.info("加载 RF 和 S3GM 的2023年预测结果...")
+        rf_pred_path = 'results/classic_models/rf_2023.npy'
+        s3gm_pred_path = 'results/s3gm_time_series/bathymetry_2023.npy'
+
+        if not os.path.exists(rf_pred_path):
+            logger.error(f"RF预测文件未找到: {rf_pred_path}. 请先运行Stage 1.8以生成此文件。")
+            return
+        if not os.path.exists(s3gm_pred_path):
+            logger.error(f"S3GM预测文件未找到: {s3gm_pred_path}. 请先运行Stage 2和3。")
+            return
+            
+        rf_preds_map = np.load(rf_pred_path)
+        s3gm_preds_map = np.load(s3gm_pred_path)
+        logger.info("预测结果加载成功")
+
+        # 3. 对齐数据
+        H, W = rf_preds_map.shape
+        rf_preds_aligned = []
+        s3gm_preds_aligned = []
+        true_depths_aligned = []
+
+        for i, (y, x) in enumerate(coords):
+            y_idx, x_idx = int(y * (H - 1)), int(x * (W - 1))
+            if 0 <= y_idx < H and 0 <= x_idx < W:
+                rf_val = rf_preds_map[y_idx, x_idx]
+                s3gm_val = s3gm_preds_map[y_idx, x_idx]
+                
+                # 仅保留所有模型和真值都有效的点
+                if np.isfinite(rf_val) and np.isfinite(s3gm_val) and rf_val > 0 and s3gm_val > 0:
+                    rf_preds_aligned.append(rf_val)
+                    s3gm_preds_aligned.append(s3gm_val)
+                    true_depths_aligned.append(true_depths_all[i])
+
+        rf_preds_aligned = np.array(rf_preds_aligned)
+        s3gm_preds_aligned = np.array(s3gm_preds_aligned)
+        true_depths_aligned = np.array(true_depths_aligned)
+        logger.info(f"数据对齐后，用于统计分析的有效验证点数: {len(true_depths_aligned)}")
+
+        # 4. 计算绝对误差
+        rf_abs_errors = np.abs(rf_preds_aligned - true_depths_aligned)
+        s3gm_abs_errors = np.abs(s3gm_preds_aligned - true_depths_aligned)
+
+        # 5. 执行Wilcoxon符号秩检验
+        # H0: 误差差异中位数为0
+        # H1: RF误差 > S3GM误差 (S3GM误差更小)
+        logger.info("执行Wilcoxon符号秩检验...")
+        stat, p_value = wilcoxon(rf_abs_errors, s3gm_abs_errors, alternative='greater')
+        logger.info("--- Wilcoxon Signed-Rank Test Results ---")
+        logger.info(f"Statistic: {stat:.4f}")
+        logger.info(f"P-value: {p_value:.6f}")
+        if p_value < 0.05:
+            logger.info("结果解读: P值小于0.05，我们拒绝零假设。S3GM模型的预测误差在统计上显著低于RF模型。")
+        else:
+            logger.info("结果解读: P值不小于0.05，我们无法拒绝零假设。没有足够的统计证据表明S3GM模型显著优于RF模型。")
+
+        # 6. 使用Bootstrapping计算MAE改进量的95%置信区间
+        logger.info("\n使用Bootstrapping计算MAE改进量的95%置信区间...")
+        diff_mae = rf_abs_errors - s3gm_abs_errors # MAE_RF - MAE_S3GM
+        n_iterations = 10000
+        bootstrap_means = []
+        for _ in range(n_iterations):
+            sample_indices = np.random.choice(len(diff_mae), size=len(diff_mae), replace=True)
+            bootstrap_means.append(np.mean(diff_mae[sample_indices]))
+        
+        confidence_interval = np.percentile(bootstrap_means, [2.5, 97.5])
+        mean_improvement = np.mean(diff_mae)
+        logger.info("--- 95% Confidence Interval for MAE Improvement (MAE_RF - MAE_S3GM) ---")
+        logger.info(f"平均改进量: {mean_improvement:.4f} m")
+        logger.info(f"95%置信区间: [{confidence_interval[0]:.4f}, {confidence_interval[1]:.4f}] m")
+        if confidence_interval[0] > 0:
+            logger.info("结果解读: 置信区间完全在零以上，这进一步证实S3GM模型提供了稳健且显著的精度提升。")
+        else:
+            logger.info("结果解读: 置信区间包含零，这表明模型的改进可能不是稳健的。")
+
+    except Exception as e:
+        logger.error(f"第四阶段统计分析失败: {str(e)}")
+        raise
+
+def stage5_in_depth_analysis():
+    """第五阶段：模型在不同深度和地形条件下的性能分析"""
+    try:
+        logger.info("开始执行第五阶段：深度和地形分区的详细性能分析")
+
+        # 1. 加载数据
+        logger.info("加载海图、RF和S3GM的2023年预测结果...")
+        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        preprocessor = DataPreprocessor(region=aoi)
+        nautical_charts = preprocessor.get_sparse_points()
+        true_depths_all = np.abs(nautical_charts['depths'])
+        coords = nautical_charts['coordinates']
+
+        rf_pred_path = 'results/classic_models/rf_2023.npy'
+        s3gm_pred_path = 'results/s3gm_time_series/bathymetry_2023.npy'
+
+        if not os.path.exists(rf_pred_path):
+            rf_pred_path_alt = 'results/classic_models/rf_time_series.npy'
+            if not os.path.exists(rf_pred_path_alt):
+                 logger.error(f"RF预测文件未找到: {rf_pred_path} 或 {rf_pred_path_alt}")
+                 return
+            else: # If saved as a list, load and get the last element
+                 rf_preds_map = np.load(rf_pred_path_alt, allow_pickle=True)[-1]
+        else:
+            rf_preds_map = np.load(rf_pred_path)
+
+        s3gm_preds_map = np.load(s3gm_pred_path)
+        
+        # 2. 对齐数据
+        H, W = rf_preds_map.shape
+        aligned_data = []
+        for i, (y, x) in enumerate(coords):
+            y_idx, x_idx = int(y * (H - 1)), int(x * (W - 1))
+            if 0 <= y_idx < H and 0 <= x_idx < W:
+                rf_val = rf_preds_map[y_idx, x_idx]
+                s3gm_val = s3gm_preds_map[y_idx, x_idx]
+                if np.isfinite(rf_val) and np.isfinite(s3gm_val) and rf_val > 0 and s3gm_val > 0:
+                    aligned_data.append({
+                        'true': true_depths_all[i],
+                        'rf': rf_val,
+                        's3gm': s3gm_val,
+                        'y_idx': y_idx,
+                        'x_idx': x_idx
+                    })
+        
+        logger.info(f"数据对齐后，用于分析的有效点数: {len(aligned_data)}")
+
+        # 3. 按深度区间分析
+        logger.info("\n--- 按深度区间分析模型性能 ---")
+        depth_bins = {
+            'Shallow (0-10m)': (0, 10),
+            'Intermediate (10-30m)': (10, 30),
+            'Deep (>30m)': (30, 100)
+        }
+        
+        print("\n| Depth Range          | Model | N    | RMSE (m) | MAE (m)  |")
+        print("|----------------------|-------|------|----------|----------|")
+
+        for name, (min_d, max_d) in depth_bins.items():
+            bin_data = [p for p in aligned_data if min_d < p['true'] <= max_d]
+            if not bin_data: continue
+
+            true = np.array([p['true'] for p in bin_data])
+            rf = np.array([p['rf'] for p in bin_data])
+            s3gm = np.array([p['s3gm'] for p in bin_data])
+            
+            rf_rmse = np.sqrt(np.mean((rf - true)**2))
+            rf_mae = np.mean(np.abs(rf - true))
+            s3gm_rmse = np.sqrt(np.mean((s3gm - true)**2))
+            s3gm_mae = np.mean(np.abs(s3gm - true))
+            
+            print(f"| {name:<20} | RF    | {len(true):<4} | {rf_rmse:<8.2f} | {rf_mae:<8.2f} |")
+            print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
+
+        # 4. 按地形坡度分析
+        logger.info("\n--- 按地形坡度分析模型性能 ---")
+        grad_y, grad_x = np.gradient(s3gm_preds_map)
+        slope_map = np.sqrt(grad_y**2 + grad_x**2)
+        
+        for p in aligned_data:
+            p['slope'] = slope_map[p['y_idx'], p['x_idx']]
+
+        slopes = np.array([p['slope'] for p in aligned_data])
+        slope_quantiles = np.percentile(slopes, [33.3, 66.6])
+
+        slope_bins = {
+            'Low Slope': (0, slope_quantiles[0]),
+            'Medium Slope': (slope_quantiles[0], slope_quantiles[1]),
+            'High Slope': (slope_quantiles[1], np.inf)
+        }
+        
+        print("\n| Topography           | Model | N    | RMSE (m) | MAE (m)  |")
+        print("|----------------------|-------|------|----------|----------|")
+
+        for name, (min_s, max_s) in slope_bins.items():
+            bin_data = [p for p in aligned_data if min_s <= p['slope'] < max_s]
+            if not bin_data: continue
+            
+            true = np.array([p['true'] for p in bin_data])
+            rf = np.array([p['rf'] for p in bin_data])
+            s3gm = np.array([p['s3gm'] for p in bin_data])
+
+            rf_rmse = np.sqrt(np.mean((rf - true)**2))
+            rf_mae = np.mean(np.abs(rf - true))
+            s3gm_rmse = np.sqrt(np.mean((s3gm - true)**2))
+            s3gm_mae = np.mean(np.abs(s3gm - true))
+            
+            print(f"| {name:<20} | RF    | {len(true):<4} | {rf_rmse:<8.2f} | {rf_mae:<8.2f} |")
+            print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
+            
+    except Exception as e:
+        logger.error(f"第五阶段详细性能分析失败: {str(e)}")
+        raise
+
 def main():
     try:
         # 设置日志系统（移除这里的调用）
@@ -1035,6 +1243,13 @@ def main():
             logger.info("执行第三阶段：结果后处理与可视化")
             stage3_postprocessing()
 
+        elif args.stage == '4':
+            logger.info("执行第四阶段：统计显著性分析")
+            stage4_statistical_analysis()
+
+        elif args.stage == '5':
+            logger.info("执行第五阶段：深度和地形分区的详细性能分析")
+            stage5_in_depth_analysis()
 
     except Exception as e:
         logger.error(f"程序执行过程中发生错误: {str(e)}")
@@ -1058,3 +1273,9 @@ if __name__ == '__main__':
 
 # 运行第三阶段（结果后处理与可视化）
 # python run_bathymetry.py --stage 3
+
+# 运行第四阶段（统计分析）
+# python run_bathymetry.py --stage 4
+
+# 运行第五阶段（详细性能分析）
+# python run_bathymetry.py --stage 5
