@@ -298,11 +298,11 @@ earthengine authenticate
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{song2025sdb,
+@article{song2026sdb,
   title={A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Machine Learning with Spatio-Temporal Generative Diffusion Models},
   author={Song, Xiaolong and Liu, Boliang and Xiao, Zhong and Xu, Haijue and Bai, Yuchuan},
   journal={Computers \& Geosciences},
-  year={2025},
+  year={2026},
   note={Under Review}
 }
 ```
@@ -344,7 +344,7 @@ Contributions are welcome! Please:
 
 ## Version History
 
-- **v1.0.0** (2025): Initial release
+- **v1.0.0** (2026): Initial release
   - Random Forest + S³GM hybrid framework
   - MIWC preprocessing
   - Conditional sampling with guided diffusion
