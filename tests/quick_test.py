@@ -180,12 +180,13 @@ def test_config_loading():
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
             
-            if 'random_forest' in config:
+            if 'rf_params' in config:
+                n_est = config['rf_params'].get('model_params', {}).get('n_estimators', 'N/A')
                 print_test("classic_models.yaml", True, 
-                          f"n_estimators={config['random_forest'].get('n_estimators')}")
+                          f"n_estimators={n_est}")
             else:
                 print_test("classic_models.yaml", False, 
-                          "Missing 'random_forest' section")
+                          "Missing 'rf_params' section")
                 return False
         else:
             print_test("classic_models.yaml", False, "File not found")
@@ -197,14 +198,14 @@ def test_config_loading():
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
             
-            if 'diffusion' in config and 'guidance' in config:
-                alpha = config['guidance'].get('alpha', 'N/A')
-                beta_max = config['diffusion'].get('beta_max', 'N/A')
+            if 'beta_max' in config and 'sampling' in config:
+                alpha = config['sampling'].get('alpha', 'N/A')
+                beta_max = config.get('beta_max', 'N/A')
                 print_test("s3gm_default.yaml", True, 
                           f"α={alpha}, β_max={beta_max}")
             else:
                 print_test("s3gm_default.yaml", False, 
-                          "Missing required sections")
+                          "Missing required parameters (beta_max or sampling)")
                 return False
         else:
             print_test("s3gm_default.yaml", False, "File not found")
