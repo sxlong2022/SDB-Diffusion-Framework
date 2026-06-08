@@ -40,7 +40,7 @@ cd SDB-Diffusion-Framework
 
 ```bash
 conda env create -f environment.yml
-conda activate bathymetry
+conda activate sdb-diffusion
 ```
 
 The `environment.yml` file includes all required dependencies:
@@ -108,8 +108,7 @@ This test will:
 
 ### Full Pipeline Execution
 
-The framework operates in four stages:
-
+The framework operates in six stages:
 #### Stage 1: Data Preprocessing
 
 Acquires and preprocesses Sentinel-2 imagery using MIWC method:
@@ -118,7 +117,7 @@ Acquires and preprocesses Sentinel-2 imagery using MIWC method:
 python run_bathymetry.py --stage 1
 ```
 
-**Before running**: Update `data_acquisition_preprocessing.py` with your Google Earth Engine project ID:
+**Before running**: Update the Google Earth Engine project ID placeholder in `run_bathymetry.py`, `data_acquisition_preprocessing.py`, and `bathymetry/preprocessor.py`:
 
 ```python
 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
@@ -177,6 +176,42 @@ python run_bathymetry.py --stage 3
 - Validation metrics (R², RMSE, MAE)
 - Visualization plots
 
+#### Stage 1.8: Classic RF Model Validation
+
+Validates the trained RF model against held-out nautical chart measurements:
+
+```bash
+python run_bathymetry.py --stage 1.8
+```
+
+**Outputs**:
+- Validation metrics (R², RMSE, MAE) for the RF model
+- Scatter plots comparing RF predictions vs. ground truth
+
+#### Stage 4: Statistical Significance Analysis
+
+Performs Wilcoxon signed-rank tests to evaluate statistical significance of model improvements:
+
+```bash
+python run_bathymetry.py --stage 4
+```
+
+**Outputs**:
+- p-values and significance results for pairwise model comparisons
+- Statistical summary tables
+
+#### Stage 5: Zoning Performance Analysis
+
+Conducts detailed spatial analysis of model performance across depth zones and geographic regions:
+
+```bash
+python run_bathymetry.py --stage 5
+```
+
+**Outputs**:
+- Per-zone performance metrics (R², RMSE, MAE)
+- Spatial performance maps and zone-specific visualizations
+
 ### Running All Stages
 
 To execute the complete pipeline:
@@ -192,11 +227,19 @@ The framework uses YAML configuration files for reproducibility:
 ### Random Forest Configuration (`configs/classic_models.yaml`)
 
 ```yaml
-random_forest:
-  n_estimators: 500
-  max_depth: 25
-  max_features: 'sqrt'
-  random_state: 42
+rf_params:
+  model_params:
+    n_estimators: 500        # Number of trees
+    max_depth: 25           # Maximum depth
+    max_features: 'sqrt'    # Feature selection method
+    random_state: 42        # Random seed
+    n_jobs: -1             # Parallel processing
+
+  feature_engineering:
+    normalization:
+      use_standard_scaling: true
+    band_ratio:
+      use_log_transform: true
 ```
 
 ### S³GM Configuration (`configs/s3gm_default.yaml`)
@@ -204,16 +247,15 @@ random_forest:
 Key hyperparameters:
 
 ```yaml
-diffusion:
-  beta_min: 0.1
-  beta_max: 1000  # Critical for stability
-  
-guidance:
-  alpha: 0.1  # Data fidelity weight (gentle guidance)
-  gamma_spatial: 5.0e-7  # Spatial smoothness weight
-  
+# SDE parameters
+beta_min: 0.1
+beta_max: 1000  # Critical for stability
+
+# Sampling parameters (data fidelity and spatial smoothness)
 sampling:
-  num_steps: 1000
+  alpha: 0.1       # Data fidelity weight (gentle guidance)
+  gamma_spatial: 5.0e-7  # Spatial smoothness weight
+  num_steps: 3
   snr: 0.01
 ```
 
@@ -285,7 +327,7 @@ earthengine authenticate
 ```
 
 **3. Import Errors**
-- Verify conda environment is activated: `conda activate bathymetry`
+- Verify conda environment is activated: `conda activate sdb-diffusion`
 - Reinstall dependencies: `conda env update -f environment.yml`
 
 **4. Sampling Instability**
@@ -333,7 +375,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 For questions or issues:
 - **GitHub Issues**: https://github.com/sxlong2022/SDB-Diffusion-Framework/issues
-- **Email**: [Corresponding author email]
+- **Email**: xlsong@tju.edu.cn
 
 ## Contributing
 
