@@ -17,7 +17,7 @@ SDB-Diffusion-Framework implements an open-source Python computational surrogate
 ## System Requirements
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with ≥6GB VRAM (tested on RTX 2060, RTX 3060, RTX 4070)
+- **GPU**: NVIDIA GPU with CUDA support and ≥6GB VRAM (tested and benchmarked on NVIDIA GeForce RTX 2060, 6GB VRAM)
 - **RAM**: ≥16GB system memory
 - **Storage**: ≥50GB for datasets and intermediate results
 
