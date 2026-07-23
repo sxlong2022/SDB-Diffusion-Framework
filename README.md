@@ -386,11 +386,14 @@ Contributions are welcome! Please:
 
 ## Version History
 
-- **v1.0.0** (2026): Initial release
-  - Random Forest + S³GM hybrid framework
-  - MIWC preprocessing
-  - Conditional sampling with guided diffusion
-  - Configuration-driven execution
+- **v1.0.0** (2026): Initial open-source release
+  - Modular two-stage pipeline combining Random Forest regression with Spatio-Temporal Generative Diffusion Models (S³GM)
+  - Multi-temporal Image Weighted Composition (MIWC) optical composite preprocessing
+  - Guided Diffusion Posterior Sampling (DPS) with data fidelity ($\alpha=0.1$) and spatial regularization ($\gamma_{spatial}=5\times 10^{-7}$)
+  - Modular software architecture with Strategy, Factory, and Pipeline design patterns
+  - Human-readable externalized YAML configuration management (`configs/s3gm_default.yaml`, `configs/classic_models.yaml`)
+  - Automated cross-platform test suite (`tests/quick_test.py`)
+  - Full FAIR4RS compliance with pinned `environment.yml`, `CITATION.cff`, and MIT License
 
 ## References
 
