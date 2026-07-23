@@ -1,25 +1,25 @@
 # SDB-Diffusion-Framework
 
-A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Machine Learning with Spatio-Temporal Generative Diffusion Models.
+A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates.
 
 ## Overview
 
-This framework implements a modular two-stage pipeline that combines Random Forest regression with Spatio-Temporal Generative Diffusion Models (S³GM) for satellite-derived bathymetry mapping. It achieves R²=0.941, RMSE=3.09 m with only 11% ground-truth coverage in complex coastal waters.
+SDB-Diffusion-Framework implements an open-source Python computational surrogate framework integrating classic machine learning with Spatio-Temporal Generative Diffusion Models (S³GM) for satellite-derived bathymetry mapping. It achieves R²=0.941, RMSE=3.09 m, and a range-normalized RMSE of 4.1% over 0–75 m depth range with only 11% ground-truth coverage in complex coastal waters.
 
 ## Highlights
 
-- Modular framework integrates Random Forest with diffusion models for bathymetry
-- Achieves R²=0.941, RMSE=3.09 m with only 11% ground-truth coverage
-- Subtle conditioning weight (α=0.1) essential for stable diffusion sampling
-- Consumer GPU processes annual dataset in approximately 12 minutes
-- Framework transferable to other geospatial inverse problems
+- Modular Python framework fuses Random Forest with diffusion models for SDB
+- Configuration-driven pipeline enables reproducible bathymetric mapping
+- Achieves R²=0.941, RMSE=3.09m with 11% sounding coverage in turbid waters
+- Consumer GPU (6GB VRAM) processes annual datasets in ~12 minutes
+- Implements FAIR principles: YAML configs, pseudocode, public GitHub repo
 
 ## System Requirements
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with ≥6GB VRAM (tested on RTX 2060)
-- **RAM**: ≥8GB system memory
-- **Storage**: ~2GB for code and dependencies (excluding datasets)
+- **GPU**: NVIDIA GPU with ≥6GB VRAM (tested on RTX 2060, RTX 3060, RTX 4070)
+- **RAM**: ≥16GB system memory
+- **Storage**: ≥50GB for datasets and intermediate results
 
 ### Software Requirements
 - **Operating System**: Linux, Windows, or macOS
@@ -341,9 +341,9 @@ If you use this code in your research, please cite:
 
 ```bibtex
 @article{song2026sdb,
-  title={A Robust Computational Framework for Satellite-Derived Bathymetry Integrating Machine Learning with Spatio-Temporal Generative Diffusion Models},
+  title={SDB-Diffusion-Framework: A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates},
   author={Song, Xiaolong and Liu, Boliang and Xiao, Zhong and Xu, Haijue and Bai, Yuchuan},
-  journal={Computers \& Geosciences},
+  journal={Environmental Modelling \& Software},
   year={2026},
   note={Under Review}
 }

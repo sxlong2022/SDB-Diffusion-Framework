@@ -1,18 +1,33 @@
 import numpy as np
 import logging
 from typing import Dict, Any, Optional, Tuple
-import ee
-ee.Authenticate()
-ee.Initialize(project='YOUR_GEE_PROJECT_ID')
 import glob
 import os
+import numpy as np
+
+try:
+    import ee
+except ImportError:
+    ee = None
 
 logger = logging.getLogger(__name__)
+
+def init_gee(project_id: str = 'YOUR_GEE_PROJECT_ID'):
+    """Initialize Google Earth Engine API safely"""
+    if ee is not None:
+        try:
+            ee.Initialize(project=project_id)
+        except Exception:
+            try:
+                ee.Authenticate()
+                ee.Initialize(project=project_id)
+            except Exception as e:
+                logger.warning(f"GEE Initialization warning: {e}")
 
 class DataPreprocessor:
     """Data preprocessor"""
     
-    def __init__(self, region: Optional[ee.Geometry] = None):
+    def __init__(self, region: Optional[Any] = None):
         """
         Initialize preprocessor
         

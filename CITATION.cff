@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "SDB-Diffusion-Framework: A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Song
+    given-names: Xiaolong
+    email: xlsong@tju.edu.cn
+    affiliation: Tianjin University
+  - family-names: Liu
+    given-names: Boliang
+    affiliation: Tianjin University
+  - family-names: Xiao
+    given-names: Zhong
+    affiliation: Tianjin University
+  - family-names: Xu
+    given-names: Haijue
+    affiliation: Tianjin University
+  - family-names: Bai
+    given-names: Yuchuan
+    affiliation: Tianjin University
+repository-code: "https://github.com/sxlong2022/SDB-Diffusion-Framework"
+license: MIT
+version: 1.0.0
+date-released: 2026-01-01
+doi: 10.5281/zenodo.XXXXXX
