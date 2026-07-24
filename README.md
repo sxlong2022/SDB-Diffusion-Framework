@@ -24,7 +24,7 @@ SDB-Diffusion-Framework implements an open-source Python computational surrogate
 ### Software Requirements
 - **Operating System**: Linux, Windows, or macOS
 - **Python**: 3.9
-- **CUDA**: 12.4 (for GPU acceleration)
+- **CUDA**: ≥11.8 (tested on CUDA 12.4)
 - **Conda**: Recommended for environment management
 
 ## Installation
