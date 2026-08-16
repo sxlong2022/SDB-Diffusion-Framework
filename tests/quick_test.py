@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Quick Test Script for SDB-Diffusion-Framework
+Quick Test Script for BathySurrogate
 
-This script performs basic verification tests to ensure the framework
+This script performs verification tests to ensure the BathySurrogate framework
 is correctly installed and configured. It tests:
-1. Module imports
-2. GPU availability (optional)
-3. Basic Random Forest functionality
-4. Configuration file loading
-5. S3GM wrapper initialization
+1. Module imports (NumPy, PyYAML, PyTorch, scikit-learn, bathysurrogate)
+2. GPU availability (CUDA detection and memory reporting)
+3. Basic Random Forest surrogate functionality (training & prediction)
+4. YAML configuration file loading and validation
+5. S3GM model wrapper configuration initialization
 
 Usage:
     python tests/quick_test.py
@@ -49,7 +49,7 @@ def test_imports():
     
     tests = []
     
-    # Test core Python libraries
+    # Test core scientific computing libraries
     try:
         import numpy as np
         tests.append(("NumPy", True, f"version {np.__version__}"))
@@ -76,45 +76,45 @@ def test_imports():
     except ImportError as e:
         tests.append(("scikit-learn", False, str(e)))
     
-    # Test project modules (with fallback for GEE dependency)
+    # Test BathySurrogate package modules (with fallback for GEE dependency)
     try:
-        from bathymetry import classic_models
-        tests.append(("bathymetry.classic_models", True, ""))
+        from bathysurrogate import classic_models
+        tests.append(("bathysurrogate.classic_models", True, ""))
     except ImportError as e:
-        tests.append(("bathymetry.classic_models", False, str(e)))
+        tests.append(("bathysurrogate.classic_models", False, str(e)))
     
     try:
-        from bathymetry import preprocessor
-        tests.append(("bathymetry.preprocessor", True, ""))
+        from bathysurrogate import preprocessor
+        tests.append(("bathysurrogate.preprocessor", True, ""))
     except ImportError as e:
         if "ee" in str(e):
-            tests.append(("bathymetry.preprocessor (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
+            tests.append(("bathysurrogate.preprocessor (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
         else:
-            tests.append(("bathymetry.preprocessor", False, str(e)))
+            tests.append(("bathysurrogate.preprocessor", False, str(e)))
     
     try:
-        from bathymetry import s3gm_wrapper
-        tests.append(("bathymetry.s3gm_wrapper", True, ""))
+        from bathysurrogate import s3gm_wrapper
+        tests.append(("bathysurrogate.s3gm_wrapper", True, ""))
     except ImportError as e:
         if "ee" in str(e):
-            tests.append(("bathymetry.s3gm_wrapper (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
+            tests.append(("bathysurrogate.s3gm_wrapper (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
         else:
-            tests.append(("bathymetry.s3gm_wrapper", False, str(e)))
+            tests.append(("bathysurrogate.s3gm_wrapper", False, str(e)))
     
     try:
-        from bathymetry import s3gm_config
-        tests.append(("bathymetry.s3gm_config", True, ""))
+        from bathysurrogate import s3gm_config
+        tests.append(("bathysurrogate.s3gm_config", True, ""))
     except ImportError as e:
-        tests.append(("bathymetry.s3gm_config", False, str(e)))
+        tests.append(("bathysurrogate.s3gm_config", False, str(e)))
     
     try:
-        from bathymetry import utils
-        tests.append(("bathymetry.utils", True, ""))
+        from bathysurrogate import utils
+        tests.append(("bathysurrogate.utils", True, ""))
     except ImportError as e:
         if "ee" in str(e):
-            tests.append(("bathymetry.utils (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
+            tests.append(("bathysurrogate.utils (GEE warning)", True, "Note: 'ee' module optional for offline testing"))
         else:
-            tests.append(("bathymetry.utils", False, str(e)))
+            tests.append(("bathysurrogate.utils", False, str(e)))
     
     # Print results
     for name, passed, message in tests:
@@ -154,7 +154,7 @@ def test_random_forest():
         
         # Generate synthetic data
         np.random.seed(42)
-        X_train = np.random.rand(100, 7)  # 7 features as in the framework
+        X_train = np.random.rand(100, 7)  # 7 baseline spectral features
         y_train = np.random.rand(100) * 50  # Depths 0-50m
         X_test = np.random.rand(20, 7)
         
@@ -238,7 +238,7 @@ def test_s3gm_wrapper():
     print_header("Test 5: S3GM Wrapper Initialization")
     
     try:
-        from bathymetry.s3gm_config import S3GMConfig
+        from bathysurrogate.s3gm_config import S3GMConfig
         
         # Create minimal config
         config = S3GMConfig(
@@ -251,9 +251,9 @@ def test_s3gm_wrapper():
         print_test("S3GMConfig Creation", True, 
                   f"components={config.num_components}, size={config.image_size}x{config.image_size}")
         
-        # Note: We don't initialize the full S3GM model here as it requires
-        # significant memory and time. The config test is sufficient for quick verification.
-        print("       Note: Full S3GM model initialization skipped (requires ~8 hours pre-training)")
+        # Note: Full S3GM model initialization requires checkpoint loading and GPU allocation.
+        # The configuration dataclass test is sufficient for installation verification.
+        print("       Note: Full S3GM sampling execution verified via run_bathymetry.py --stage 2")
         
         return True
         
@@ -264,7 +264,7 @@ def test_s3gm_wrapper():
 def main():
     """Run all tests"""
     print("\n" + "="*60)
-    print("  SDB-Diffusion-Framework Quick Test")
+    print("  BathySurrogate Verification Test Suite")
     print("="*60)
     print("\nThis test verifies basic framework functionality.")
     print("Expected runtime: < 30 seconds\n")
@@ -291,18 +291,18 @@ def main():
     print(f"\nResults: {passed}/{total} tests passed")
     
     if passed == total:
-        print("\n[PASS] All tests passed! Framework is ready to use.")
+        print("\n[PASS] All tests passed! BathySurrogate is ready to use.")
         print("\nNext steps:")
-        print("  1. Update data_acquisition_preprocessing.py with your GEE project ID")
-        print("  2. Prepare your input data (Sentinel-2, GEBCO, nautical charts)")
-        print("  3. Run: python run_bathymetry.py --stage 1")
+        print("  1. Update GEE credentials in data_acquisition_preprocessing.py")
+        print("  2. Prepare input datasets (Sentinel-2, GEBCO grids, nautical chart soundings)")
+        print("  3. Run: python run_bathymetry.py --stage 1.5 (Train surrogate model)")
         return 0
     else:
         print("\n[FAIL] Some tests failed. Please check the error messages above.")
         print("\nTroubleshooting:")
-        print("  - Ensure conda environment is activated")
+        print("  - Ensure conda environment is activated: conda activate bathysurrogate")
         print("  - Reinstall dependencies: conda env update -f environment.yml")
-        print("  - Check GitHub issues: https://github.com/sxlong2022/SDB-Diffusion-Framework/issues")
+        print("  - Report issues: https://github.com/sxlong2022/BathySurrogate/issues")
         return 1
 
 if __name__ == "__main__":

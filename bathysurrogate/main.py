@@ -6,7 +6,6 @@ import logging
 import ee
 from scipy.interpolate import RegularGridInterpolator
 import torch
-import cv2
 
 # Import custom modules
 from .preprocessor import DataPreprocessor

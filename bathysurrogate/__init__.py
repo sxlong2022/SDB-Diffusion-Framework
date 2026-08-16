@@ -1,9 +1,9 @@
 """
-Bathymetry Package
-Hybrid system for bathymetry estimation
+BathySurrogate Package
+Modular environmental surrogate framework for satellite-derived bathymetry.
 """
 
-__version__ = '0.1.0'
+__version__ = '1.0.0'
 
 from .utils import validate_data, normalize_data, create_spatiotemporal_grid, calculate_uncertainty
 from .preprocessor import DataPreprocessor

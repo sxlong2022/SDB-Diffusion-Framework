@@ -7,7 +7,6 @@ import logging
 import yaml
 import argparse
 from scipy.interpolate import interp1d, RegularGridInterpolator
-import cv2
 from tqdm import tqdm
 from .s3gm_config import S3GMConfig, load_config
 from .classic_models import ClassicModels
@@ -18,7 +17,7 @@ from .preprocessor import DataPreprocessor
 from torch.utils.checkpoint import checkpoint
 import math
 
-# Add S3GM code path
+# Add S3GM code directory to sys.path
 s3gm_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'S3GM', 'Code')
 if not os.path.exists(s3gm_path):
     raise ImportError(f"S3GM code path does not exist: {s3gm_path}")
@@ -33,28 +32,30 @@ from sampler.utils import complete_video_pc_dps, LangevinCorrector
 logger = logging.getLogger(__name__)
 
 class S3GMWrapper:
-    """S3GM model wrapper"""
+    """S3GM Generative Diffusion Model Wrapper."""
     
     def __init__(
         self,
         config_path: Optional[str] = None,
         classic_models: Optional[ClassicModels] = None
     ):
-        """Initialize S3GM wrapper"""
+        """Initialize S3GM model wrapper."""
         try:
             # 1. Load configuration
             self.config = load_config(config_path) if config_path else S3GMConfig()
-            logger.info(f"Loaded config sampling.inner_loop value: {self.config.sampling.get('inner_loop', 'not found in sampling dict')}")
+            # Confirm inner_loop value loaded from config
+            logger.info(f"Loaded sampling.inner_loop value: {self.config.sampling.get('inner_loop', 'Not found')}")
+            # *************************************
             
-            # 2. Ensure classic model instance exists
+            # 2. Ensure surrogate model instance exists
             self.classic_models = classic_models or ClassicModels()
             
-            # 3. Set device
+            # 3. Configure hardware device
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
-            # 4. Initialize model - Note: UNetVideoModel internally adds +1 to in_channels
+            # 4. Initialize model (UNetVideoModel internally appends +1 channel)
             input_channels = self.config.num_components
-            logger.info(f"Model initialization: input_channels={input_channels} (UNet internally adds +1)")
+            logger.info(f"Model initialized: input channels={input_channels} (+1 in UNet)")
             
             self.model = UNetVideoModel(
                 in_channels=input_channels,
@@ -73,56 +74,60 @@ class S3GMWrapper:
                 init_shift=self.config.range_adaptation['init_shift']
             ).to(self.device)
             
-            # Log initialized model parameters
-            logger.info(f"Model parameter count: {sum(p.numel() for p in self.model.parameters())}")
+            # Log initialized parameter count
+            logger.info(f"Total model parameters: {sum(p.numel() for p in self.model.parameters())}")
             logger.info(f"Model input channels: {self.model.in_channels}")
             logger.info(f"Model output channels: {self.model.out_channels}")
             
             # Log configuration
-            logger.info(f"Range adaptation config:")
+            logger.info(f"Range adaptation configuration:")
             for key, value in self.config.range_adaptation.items():
                 logger.info(f"  - {key}: {value}")
             
             # 5. Initialize SDE
             sde_type = self.config.sde_type.lower()
             if sde_type == 'vpsde':
+                # Pass full config object to SDE
                 self.sde = VPSDE(config=self.config)
+            # Internal processing step
             elif sde_type == 'vesde':
                 self.sde = VESDE(config=self.config)
             else:
                 raise NotImplementedError(f"SDE type {sde_type} not supported.")
+            # -------------------------
 
-            logger.info(f"VPSDE/VESDE initialized with: beta_min={getattr(self.sde, 'beta_0', 'N/A')}, beta_max={getattr(self.sde, 'beta_1', 'N/A')}, sigma_min={getattr(self.sde, 'sigma_min', 'N/A')}, sigma_max={getattr(self.sde, 'sigma_max', 'N/A')}, num_scales={self.sde.N}")
+            # Verify SDE parameter initialization
+            logger.info(f"SDE initialized: beta_min={getattr(self.sde, 'beta_0', 'N/A')}, beta_max={getattr(self.sde, 'beta_1', 'N/A')}, sigma_min={getattr(self.sde, 'sigma_min', 'N/A')}, sigma_max={getattr(self.sde, 'sigma_max', 'N/A')}, num_scales={self.sde.N}")
             
-            # 5. Add score_fn (needed before corrector)
+            # Configure score function before corrector
             self.score_fn = self._get_score_fn()
             
-            # 6. Don't create corrector instance at initialization
+            # Lazy initialize corrector
             self.corrector = None
         
-            # 7. Add EMA
+            # 7. Exponential Moving Average (EMA)
             if hasattr(self.config, 'use_ema') and self.config.use_ema:
                 self.ema = ExponentialMovingAverage(
                     self.model.parameters(),
                     decay=self.config.ema_rate
                 )
             
-            logger.info("S3GM wrapper initialization completed")
+            logger.info("S3GM wrapper initialization complete")
             
         except Exception as e:
             logger.error(f"S3GM wrapper initialization failed: {str(e)}")
             raise
 
     def set_classic_models(self, classic_models: ClassicModels) -> None:
-        """Set classic models"""
+        """Set surrogate models."""
         self.classic_models = classic_models
-        logger.info("S3GM wrapper classic models updated")
+        logger.info("Surrogate model updated in S3GM wrapper")
 
     def _prepare_input_data(self, normalized_classic, gebco_data, measurements):
-        """Prepare input data"""
-        # Data validation function
+        """Prepare input tensor."""
+        # Numerical validity check
         def check_data(data, name):
-            # Ensure data is torch.Tensor type
+            # Ensure tensor type
             if isinstance(data, np.ndarray):
                 data = torch.from_numpy(data)
             elif not isinstance(data, torch.Tensor):
@@ -138,7 +143,7 @@ class S3GMWrapper:
             return True
         
         try:
-            # Check each input
+            # Validate input components
             check_data(normalized_classic, "normalized_classic")
             check_data(gebco_data, "gebco_data")
             if measurements is not None:
@@ -147,21 +152,21 @@ class S3GMWrapper:
             #print(f"GEBCO data shape before processing: {gebco_data.shape}")
             
             B = 1  # Batch size
-            T = len(normalized_classic)  # Number of time steps
+            T = len(normalized_classic)  # Number of frames
             H, W = gebco_data.shape[-2:]  # Spatial dimensions
         
-            # Check normalized_classic dimensions
+            # Check normalized classic surrogate dimension
             # print(f"Classic results shape: {normalized_classic.shape}")
             if len(normalized_classic.shape) != 4:
-                raise ValueError(f"Classic results dimension error: {normalized_classic.shape}, should be [T, 1, H, W]")
+                raise ValueError(f"Surrogate dimension error: {normalized_classic.shape}, expected [T, 1, H, W]")
             
             input_tensor = torch.zeros((B, T, self.config.num_components, H, W))
-            # print(f"Input tensor initial shape: {input_tensor.shape}")  # Should be (1, 6, 5, 64, 64)
+            # Internal processing step
                 
-            # 1. Classic model results (keep positive values)
+            # 1. Surrogate prediction channel
             input_tensor[0, :, 0:1] = torch.from_numpy(normalized_classic)
         
-            # 2. GEBCO data (convert to positive values)
+            # 2. GEBCO bathymetric prior channel
             gebco_tensor = torch.from_numpy(gebco_data)
             if len(gebco_tensor.shape) == 3:
                 gebco_tensor = gebco_tensor.unsqueeze(1)
@@ -170,37 +175,37 @@ class S3GMWrapper:
             input_tensor[0, :, 1:2] = gebco_tensor
             # print(f"Input tensor shape after GEBCO: {input_tensor.shape}")
         
-            # 3. Measurement point data (nautical chart data, keep positive values)
+            # 3. Nautical chart sounding sparse channel
             if measurements is not None:
                 depth_grid = torch.zeros((H, W))
                 mask_grid = torch.zeros((H, W))
             
-                coords = measurements['coordinates']  # Assuming range in [0,1]
+                coords = measurements['coordinates']  # Normalized coordinates [0, 1]
                 depths = measurements['depths']
             
-                # Add coordinate validation
+                # Verify coordinate bounds
                 print(f"Coordinates range: [{coords.min()}, {coords.max()}]")
                 print(f"Number of measurement points: {len(depths)}")
             
                 for depth, (y, x) in zip(depths, coords):
-                    # Map [0,1] range to [0,H-1] and [0,W-1]
+                    # Map [0, 1] to pixel grid coordinates
                     i = min(int(y * (H-1)), H-1)
                     j = min(int(x * (W-1)), W-1)
                     depth_grid[i, j] = depth
                     mask_grid[i, j] = 1.0
             
-                # Check number of filled points
+                # Verify populated points
                 print(f"Number of filled points in depth grid: {(depth_grid != 0).sum()}")
                 print(f"Number of filled points in mask grid: {(mask_grid != 0).sum()}")
             
-                # Expand dimensions and repeat
+                # Expand dimensions across time frames
                 input_tensor[0, :, 2:3] = depth_grid.unsqueeze(0).unsqueeze(0).repeat(T, 1, 1, 1)
                 input_tensor[0, :, 3:4] = mask_grid.unsqueeze(0).unsqueeze(0).repeat(T, 1, 1, 1)
             
                 print(f"Input tensor shape after measurements: {input_tensor.shape}")
         
-            # 4. Unified mask
-            unified_mask = torch.ones((T, 1, H, W))  # Create unified mask
+            # 4. Unified spatial domain mask
+            unified_mask = torch.ones((T, 1, H, W))
             #print(f"Unified mask shape: {unified_mask.shape}")
             #print(f"Unified mask value range: [{unified_mask.min()}, {unified_mask.max()}]")
 
@@ -208,7 +213,7 @@ class S3GMWrapper:
             #print(f"Final input tensor shape: {input_tensor.shape}")
             #print(f"Channel 5 (unified mask) value range: [{input_tensor[0, :, 4:5].min()}, {input_tensor[0, :, 4:5].max()}]")
 
-            # Validate value ranges for all channels
+            # Validate range across all input channels
             for i in range(5):
                 channel_data = input_tensor[0, :, i:i+1]
                 print(f"Channel {i+1} value range: [{channel_data.min():.4f}, {channel_data.max():.4f}]")
@@ -220,38 +225,38 @@ class S3GMWrapper:
             raise
             
     def _create_measurement_grid(self, depths, coordinates, shape):
-        """Create measurement point grid"""
+        """Create sparse sounding observation grid."""
         try:
             H, W = shape
             grid = np.zeros((2, H, W))  # [2, H, W] for depths and positions
             
-            # Normalize coordinates
+            # Normalize coordinate grid
             norm_coords = coordinates.copy()
             norm_coords[:, 0] = (norm_coords[:, 0] - norm_coords[:, 0].min()) / \
                                (norm_coords[:, 0].max() - norm_coords[:, 0].min()) * (H - 1)
             norm_coords[:, 1] = (norm_coords[:, 1] - norm_coords[:, 1].min()) / \
                                (norm_coords[:, 1].max() - norm_coords[:, 1].min()) * (W - 1)
             
-            # Fill depth values
+            # Populate sounding depth values
             for depth, (y, x) in zip(depths, norm_coords):
                 i, j = int(y), int(x)
                 grid[0, i, j] = depth
-                grid[1, i, j] = 1  # Position marker
+                grid[1, i, j] = 1  # Observation flag
                 
             return grid
             
         except Exception as e:
-            logger.error(f"Measurement grid creation failed: {str(e)}")
+            logger.error(f"Sounding grid creation failed: {str(e)}")
             raise
             
     def _create_temporal_mask(self, measurements):
-        """Create temporal mask"""
+        """Create temporal observation mask."""
         try:
             mask = np.zeros((self.config.num_frames, 
                            self.config.image_size, 
                            self.config.image_size))
             
-            # Create mask based on measurement point positions
+            # Build mask based on coordinate points
             if 'coordinates' in measurements:
                 coords = measurements['coordinates']
                 for t in range(self.config.num_frames):
@@ -270,19 +275,19 @@ class S3GMWrapper:
         """Data scale transformation
         
         Args:
-            x: Input data [already mean-std normalized, range in [-1,1], land is 1.5]
+            x: Input data normalized to [-1, 1], land mapped to 1.5
             mode: 'forward' or 'inverse'
         """
         try:
             if mode == 'forward':
-                # Data is already normalized, just log the range
-                logger.info(f"Pretrain data range: [{x.min().item():.4f}, {x.max().item():.4f}]")
+                # Log data ranges
+                logger.info(f"Pretraining data range: [{x.min().item():.4f}, {x.max().item():.4f}]")
                 return x
                 
             elif mode == 'inverse':
-                # Keep land marker value unchanged
+                # Preserve land mask values
                 land_mask = (x == 1.5)
-                # Other values are already in [-1,1] range, no conversion needed
+                # Marine values already normalized to [-1, 1]
                 return x
                 
         except Exception as e:
@@ -290,29 +295,29 @@ class S3GMWrapper:
             raise
 
     def _prepare_pretrain_data(self, classic_data, gebco_data):
-        """Prepare pretraining data
+        """Prepare pretraining tensor
         
         Args:
-            classic_data: Classic model results (normalized to [0,1])
-            gebco_data: GEBCO data (normalized to [0,1])
+            classic_data: Surrogate prediction array (normalized)
+            gebco_data: GEBCO bathymetric grid (normalized)
         """
         try:
             B = 1  # Batch size
-            T = len(classic_data)  # Number of time steps
+            T = len(classic_data)  # Number of frames
             H, W = gebco_data.shape[-2:]  # Spatial dimensions
             
             # Create input tensor
             input_tensor = torch.zeros((B, T, self.config.num_components, H, W))
             
-            # Get weights
+            # Retrieve channel weights
             classic_weight = self.config.input_weights['classic']
             gebco_weight = self.config.input_weights['gebco']
             
-            # 1. Classic model results (apply weights)
+            # 1. Surrogate channel with weighting
             classic_tensor = torch.from_numpy(classic_data).unsqueeze(1) * classic_weight # [T, 1, H, W]
             input_tensor[0, :, 0:1] = classic_tensor
             
-            # 2. GEBCO data (apply weights)
+            # 2. GEBCO bathymetric prior channel with weighting
             gebco_tensor = torch.from_numpy(gebco_data)
             if len(gebco_tensor.shape) == 3:  # [T, H, W]
                 gebco_tensor = gebco_tensor.unsqueeze(1)  # [T, 1, H, W]
@@ -321,77 +326,115 @@ class S3GMWrapper:
             gebco_tensor = gebco_tensor * gebco_weight
             input_tensor[0, :, 1:2] = gebco_tensor
             
-            # 3. Set other channels to zero (nautical chart data not used in pretraining)
-            input_tensor[0, :, 2:4] = 0.0
+            # 3. Composite depth channel: RF surrogate prior + sparse chart sounding injection
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            # U-Net learns spatial mapping from sparse soundings to full domain
+            # U-Net learns spatial mapping from sparse soundings to full domain
+            depth_weight = self.config.input_weights.get('depth', 1.0)
+            classic_norm_full = classic_tensor.squeeze(1) / classic_weight  # Unweighted [-1, 1] scale
+            fused_depth = classic_norm_full.clone()
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            try:
+                from bathymetry.preprocessor import DataPreprocessor
+                preprocessor = DataPreprocessor(region=[122.35, 30.62, 122.6, 30.8])
+                nautical_charts = preprocessor.get_sparse_points()
+                chart_depths = nautical_charts['depths']
+                chart_coords = nautical_charts['coordinates']
+            # Pretraining embeds sparse sounding measurements into Channel 2
+                depth_grid = classic_norm_full[0].clone()  # Base RF surrogate grid
+                mask_grid = torch.zeros(H, W)
+                for idx, (depth, (y, x)) in enumerate(zip(chart_depths, chart_coords)):
+                    i = min(int(y * (H-1)), H-1)
+                    j = min(int(x * (W-1)), W-1)
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            # Execute reverse diffusion trajectory
+            # Physical depth normalized to [-1, 1] for Channel 2
+            # Internal processing step
+                    depth_norm = float(depth) / 45.0 - 1.0  # (depth-0)/(90-0)*2-1
+                    depth_grid[i, j] = depth_norm
+                    mask_grid[i, j] = 1.0
+            # Internal processing step
+                for t in range(T):
+                    input_tensor[0, t, 2:3] = depth_grid.unsqueeze(0) * depth_weight
+            # Spatial observation mask
+                    input_tensor[0, t, 3:4] = mask_grid.unsqueeze(0)
+                logger.info(f"Pretraining depth channel populated with {int(mask_grid.sum())} sounding points")
+            except Exception as e:
+            # Fallback to pure RF surrogate prior
+                logger.warning(f"Sounding embedding failed, falling back to pure RF prior: {e}")
+                input_tensor[0, :, 2:3] = fused_depth.unsqueeze(1) * depth_weight
+                input_tensor[0, :, 3:4] = 1.0
             
-            # 4. Unified mask
+            # 4. Observation mask channel (1=sounding, 0=unobserved)
+
+            # 5. Spatial domain mask (all ones during pretraining)
             input_tensor[0, :, 4:5] = 1.0
             
-            # 5. Apply data transformation
+            # Apply tensor transformation
             transformed_tensor = self._transform_pretrain(input_tensor.to(self.device))
             
-            logger.info(f"Pretrain data preparation complete:")
+            logger.info(f"Pretraining data prepared:")
             logger.info(f"- Input tensor shape: {transformed_tensor.shape}")
-            logger.info(f"- Classic model channel (weighted) range: [{transformed_tensor[0, :, 0:1].min().item():.4f}, {transformed_tensor[0, :, 0:1].max().item():.4f}]")
+            logger.info(f"- Surrogate channel (weighted) range: [{transformed_tensor[0, :, 0:1].min().item():.4f}, {transformed_tensor[0, :, 0:1].max().item():.4f}]")
             logger.info(f"- GEBCO channel (weighted) range: [{transformed_tensor[0, :, 1:2].min().item():.4f}, {transformed_tensor[0, :, 1:2].max().item():.4f}]")
             
             return transformed_tensor
             
         except Exception as e:
-            logger.error(f"Pretrain data preparation failed: {str(e)}")
+            logger.error(f"Pretraining data preparation failed: {str(e)}")
             raise
 
     def pretrain(self, classic_data, gebco_data, save_path):
-        """Execute pretraining
+        """Execute diffusion model pretraining
         
         Args:
-            classic_data: Classic model results (normalized to [-5,5])
-            gebco_data: GEBCO data (normalized to [-5,5])
-            save_path: Model save path
+            classic_data: Surrogate prediction array (normalized)
+            gebco_data: GEBCO bathymetry array (normalized)
+            save_path: Destination checkpoint path
         """
         try:
-            # Check input data
+            # Check data validity
             if np.isnan(classic_data).any() or np.isnan(gebco_data).any():
                 raise ValueError("Input data contains NaN values")
             
-            # Check model initialization state
+            # Check data validity
             for name, param in self.model.named_parameters():
                 if torch.all(param == 0):
-                    # logger.warning(f"{name} weights are all zeros, reinitializing")
+            # Check model parameter initialization
                     if 'weight' in name:
                         nn.init.xavier_normal_(param)
                     elif 'bias' in name:
                         nn.init.zeros_(param)
             
-            # Prepare pretraining data (includes data transformation)
+            # Internal processing step
             pretrain_tensor = self._prepare_pretrain_data(classic_data, gebco_data)
             
-            # Execute pretraining - use new pretraining function
+            # Internal processing step
             success = self._run_proper_pretrain(pretrain_tensor, num_epochs=1500)
             
             if not success:
                 logger.error("Pretraining failed, cannot continue")
                 raise RuntimeError("Pretraining failed")
             
-            # Create save directory (if not exists)
+            # Internal processing step
             save_dir = os.path.dirname(save_path)
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
-                logger.info(f"Created model save directory: {save_dir}")
+                logger.info(f"Created checkpoint directory: {save_dir}")
             
-            # Validate model before saving
+            # Internal processing step
             self._check_model_weights()
             torch.save(self.model.state_dict(), save_path)
             logger.info(f"Pretrained model saved to: {save_path}")
             
-            # Log current model configuration
+            # Internal processing step
             logger.info(f"Model configuration:")
             logger.info(f"  - Range adaptation: {self.config.range_adaptation['enabled']}")
             logger.info(f"  - Mixed activation: {self.config.range_adaptation['use_mixed_activation']}")
-            logger.info(f"  - Land marker value: {self.config.range_adaptation['land_value']}")
+            logger.info(f"  - Land mask flag: {self.config.range_adaptation['land_value']}")
             
-            # Validate model
-            logger.info(f"Validating model...")
+            # Internal processing step
+            logger.info(f"Validating model output...")
             self.model.eval()
             with torch.no_grad():
                 test_input = pretrain_tensor[:, :1].clone()
@@ -408,38 +451,38 @@ class S3GMWrapper:
                     obs_mask=obs_mask,
                     frame_indices=torch.arange(T, device=self.device).expand(B, -1)
                 )
-                logger.info(f"Model test output range: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
+                logger.info(f"Model forward test output range: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
             
         except Exception as e:
             logger.error(f"Pretraining failed: {str(e)}")
             raise
 
     def load_pretrained(self, model_path: str):
-        """Load pretrained model"""
+        """Load pretrained model weights."""
         try:
-            logger.info(f"Loading pretrained model: {model_path}")
+            logger.info(f"Loading pretrained weights from: {model_path}")
             state_dict = torch.load(model_path, map_location=self.device)
             
-            # Handle model structure changes - allow missing parameters for new layers
+            # Internal processing step
             model_dict = self.model.state_dict()
             
-            # Filter out mismatched keys
+            # Internal processing step
             pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict}
             
-            # Check for missing keys
+            # Check data validity
             missing_keys = [k for k in model_dict.keys() if k not in pretrained_dict]
             if missing_keys:
-                logger.warning(f"Model structure updated, following parameters will be randomly initialized:")
+                logger.warning(f"Model architecture changed, the following parameters will be initialized randomly:")
                 for k in missing_keys:
                     logger.warning(f" - {k}")
             
-            # Update current model parameters
+            # Internal processing step
             model_dict.update(pretrained_dict)
             
-            # Load updated parameters
+            # Internal processing step
             self.model.load_state_dict(model_dict, strict=False)
             
-            # Log loaded model info
+            # Internal processing step
             logger.info(f"Successfully loaded pretrained model")
             self._check_model_weights()
             return True
@@ -447,37 +490,38 @@ class S3GMWrapper:
             logger.error(f"Failed to load pretrained model: {str(e)}")
             raise
 
-    def conditional_sampling(self, measurements, measurement_coordinates, years, classic_data, gebco_data):
-        """Execute conditional sampling
+    def conditional_sampling(self, measurements, measurement_coordinates, years, classic_data, gebco_data, fold_id: Optional[int] = None):
+        """Execute conditional diffusion sampling
         
         Args:
-            measurements: Nautical chart depth data (normalized)
-            measurement_coordinates: Nautical chart coordinates
-            years: List of years
-            classic_data: Classic model results (normalized)
-            gebco_data: GEBCO data (normalized)
+            measurements: Normalized chart sounding measurements
+            measurement_coordinates: Sounding coordinates (normalized [0, 1])
+            years: List of annual time steps
+            classic_data: Surrogate prediction array (normalized)
+            gebco_data: GEBCO bathymetry grid (normalized)
+            fold_id: Spatial CV fold ID (optional; if provided, masks holdout test points)
         """
         try:
-            # Prepare conditional sampling data
+            # Execute reverse diffusion trajectory
             input_tensor = self._prepare_condition_data(
-                measurements, measurement_coordinates, years, classic_data, gebco_data
+                measurements, measurement_coordinates, years, classic_data, gebco_data, fold_id=fold_id
             )
             
-            # Execute sampling
+            # Execute reverse diffusion trajectory
             results = self._run_sampling(input_tensor)
             
-            # Check results (ensure it's a tensor)
+            # Check data validity
             if isinstance(results, np.ndarray):
                 results_tensor = torch.from_numpy(results)
             else:
                 results_tensor = results
             
-            logger.info(f"Conditional sampling result shape: {results_tensor.shape}")
+            logger.info(f"Sampling result shape: {results_tensor.shape}")
             if torch.isnan(results_tensor).any():
                 nan_ratio = torch.isnan(results_tensor).sum().item() / results_tensor.numel()
-                logger.warning(f"Conditional sampling result contains NaN values! NaN ratio: {nan_ratio:.2%}")
+                logger.warning(f"Sampling output contains NaNs! Ratio: {nan_ratio:.2%}")
                 
-                # Log NaN ratio for each channel
+            # Internal processing step
                 for c in range(results_tensor.shape[2]):
                     channel_nan_ratio = torch.isnan(results_tensor[..., c, :, :]).sum().item() / \
                                       (results_tensor.shape[0] * results_tensor.shape[1] * 
@@ -486,9 +530,9 @@ class S3GMWrapper:
             
             valid_values = results_tensor[~torch.isnan(results_tensor)]
             if len(valid_values) > 0:
-                logger.info(f"Conditional sampling result range (excluding NaN): [{valid_values.min().item():.4f}, {valid_values.max().item():.4f}]")
+                logger.info(f"Sampling result range (excluding NaNs): [{valid_values.min().item():.4f}, {valid_values.max().item():.4f}]")
             else:
-                logger.error("No valid values in conditional sampling result!")
+                logger.error("No valid marine values found in sampling output!")
             
             return results
             
@@ -496,31 +540,31 @@ class S3GMWrapper:
             logger.error(f"Conditional sampling failed: {str(e)}")
             raise
 
-    def _prepare_condition_data(self, measurements, measurement_coordinates, years, classic_data, gebco_data):
-        """Prepare conditional sampling data"""
+    def _prepare_condition_data(self, measurements, measurement_coordinates, years, classic_data, gebco_data, fold_id: Optional[int] = None):
+        """Prepare conditional sampling tensors."""
         try:
-            # Ensure input data is correct
+            # Internal processing step
             H, W = self.config.image_size, self.config.image_size
             T = len(years)
             
-            # Get weights
+            # Retrieve channel weights
             classic_weight = self.config.input_weights['classic']
             gebco_weight = self.config.input_weights['gebco']
             
-            # Log accurate dimension info
-            logger.info(f"Preparing condition data: years={years}, num_components={self.config.num_components}")
+            # Internal processing step
+            logger.info(f"Preparing conditional tensor: years={years}, channels={self.config.num_components}")
             
-            # Ensure input_tensor dimensions are correct
-            # Format: [batch, time, channels, height, width]
+            # Internal processing step
+            # Internal processing step
             input_tensor = torch.zeros((1, T, self.config.num_components, H, W), 
                                      dtype=torch.float32, device=self.device)
             
-            # 0. Load classic model results (apply weights)
+            # Spatial and temporal decay weights
             classic_tensor = torch.from_numpy(classic_data).unsqueeze(1) * classic_weight # [T, 1, H, W]
             input_tensor[0, :, 0:1] = classic_tensor.to(self.device)
-            logger.info(f"- Classic model data (weighted) range: [{input_tensor[0, :, 0:1].min().item():.4f}, {input_tensor[0, :, 0:1].max().item():.4f}]")
+            logger.info(f"- Surrogate channel (weighted) range: [{input_tensor[0, :, 0:1].min().item():.4f}, {input_tensor[0, :, 0:1].max().item():.4f}]")
 
-            # 1. Load GEBCO data (apply weights)
+            # Spatial and temporal decay weights
             gebco_tensor = torch.from_numpy(gebco_data)
             if len(gebco_tensor.shape) == 3:  # [T, H, W]
                 gebco_tensor = gebco_tensor.unsqueeze(1)  # [T, 1, H, W]
@@ -528,14 +572,32 @@ class S3GMWrapper:
                 gebco_tensor = gebco_tensor.unsqueeze(0).unsqueeze(0).repeat(T, 1, 1, 1)  # [T, 1, H, W]
             gebco_tensor = gebco_tensor * gebco_weight
             input_tensor[0, :, 1:2] = gebco_tensor.to(self.device)
-            logger.info(f"- GEBCO data (weighted) range: [{input_tensor[0, :, 1:2].min().item():.4f}, {input_tensor[0, :, 1:2].max().item():.4f}]")
+            logger.info(f"- GEBCO channel (weighted) range: [{input_tensor[0, :, 1:2].min().item():.4f}, {input_tensor[0, :, 1:2].max().item():.4f}]")
             
-            # Create depth grid and mask grid
-            depth_grid = torch.zeros((H, W), device=self.device)
+            # Spatial observation mask
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            # Physical depth normalized to [-1, 1] for Channel 2
+            # Spatial and temporal decay weights
+            # Internal processing step
+            depth_grid = torch.from_numpy(classic_data[-1]).to(self.device).float().clone()
             mask_grid = torch.zeros((H, W), device=self.device)
             
-            # Fill measurement points
-            for depth, (y, x) in zip(measurements, measurement_coordinates):
+            # Internal processing step
+            fold_ids = None
+            if fold_id is not None:
+                folds_path = 'intermediate_results/validation/spatial_folds.npz'
+                if os.path.exists(folds_path):
+                    folds_data = np.load(folds_path)
+                    fold_ids = folds_data['fold_ids']
+                    logger.info(f"S3GM DPS guidance mask: masking {np.sum(fold_ids == fold_id)} test points for Fold {fold_id}")
+                else:
+                    raise FileNotFoundError(f"Spatial fold definition file not found: {folds_path}")
+            
+            # Internal processing step
+            for idx, (depth, (y, x)) in enumerate(zip(measurements, measurement_coordinates)):
+                if fold_id is not None and fold_ids is not None and fold_ids[idx] == fold_id:
+                    continue
+                
                 i = min(int(y * (H-1)), H-1)
                 j = min(int(x * (W-1)), W-1)
                 
@@ -550,41 +612,41 @@ class S3GMWrapper:
                 
                 mask_grid[i, j] = 1.0 # Assigning 1.0 (python float) is okay
             
-            # Record original mask
+            # Spatial observation mask
             original_mask = mask_grid.cpu().numpy()
             valid_observations = np.sum(original_mask > 0)
-            logger.info(f"Original mask observation point count: {valid_observations}")
+            logger.info(f"Valid sounding observations count: {valid_observations}")
             
-            # Total mask point counter
+            # Spatial observation mask
             total_mask_points = 0
             
-            # For all time steps:
+            # Internal processing step
             for t, year in enumerate(years):
-                # Nautical chart depth data (normalized)
+            # Pretraining embeds sparse sounding measurements into Channel 2
                 input_tensor[0, t, 2:3] = depth_grid.unsqueeze(0)
                 
-                # Set observation mask for all years with different strengths
-                # 2023 uses full mask
+            # Spatial observation mask
+            # Spatial observation mask
                 if year == 2023:
                     input_tensor[0, t, 3:4] = mask_grid.unsqueeze(0)
                     total_mask_points += valid_observations
-                    logger.info(f"Year {year} uses full mask, {valid_observations} observation points (100%)")
+                    logger.info(f"Year {year}: full observation mask with {valid_observations} soundings (100%)")
                 else:
-                    # Other years use partial mask (improved strategy)
-                    # Ensure even 2018 has at least 20% observation points
-                    year_factor = 0.2 + 0.8 * (year - 2018) / 5.0  # Range from 0.2 to 1.0
+            # Spatial observation mask
+            # Spatial observation mask
+                    year_factor = 0.2 + 0.8 * (year - 2018) / 5.0
                     
-                    # Generate deterministic mask (no random dropout, take first N points)
+            # Spatial observation mask
                     n_points = int(valid_observations * year_factor)
-                    n_points = max(1, n_points)  # Ensure at least 1 point
+                    n_points = max(1, n_points)
                     
-                    # Create new mask
+            # Spatial observation mask
                     partial_mask = torch.zeros_like(mask_grid)
                     
-                    # Get observation point coordinates from original mask
+            # Spatial observation mask
                     obs_indices = torch.nonzero(mask_grid, as_tuple=True)
                     if len(obs_indices[0]) > 0:
-                        # Keep only first n_points observation points
+            # Spatial observation mask
                         selected_indices = list(zip(obs_indices[0][:n_points].tolist(), 
                                                     obs_indices[1][:n_points].tolist()))
                         
@@ -594,57 +656,57 @@ class S3GMWrapper:
                     input_tensor[0, t, 3:4] = partial_mask.unsqueeze(0)
                     points_count = partial_mask.sum().item()
                     total_mask_points += points_count
-                    logger.info(f"Year {year} retained {points_count:.0f} observation points ({year_factor*100:.0f}%)")
+                    logger.info(f"Year {year}: retained {points_count:.0f} soundings ({year_factor*100:.0f}%)")
             
-            # Unified mask
+            # Spatial observation mask
             input_tensor[0, :, 4:5] = 1.0
             
-            # Calculate spatial weights based on original mask
+            # Spatial observation mask
             def calculate_spatial_weights(mask, decay=None):
-                """Calculate distance-based spatial weights using integer mask"""
+                """Compute distance-based spatial decay weights."""
                 if decay is None:
                     decay = self.config.spatial_decay
                     
-                # Ensure mask is numpy array
+            # Internal processing step
                 if isinstance(mask, torch.Tensor):
                     mask = mask.cpu().numpy()
                     
-                # Ensure mask is 2D array with values 0 or 1
+            # Internal processing step
                 mask = mask.squeeze()
-                # Binarize mask to 0/1
+            # Internal processing step
                 mask = (mask > 0.5).astype(np.float32)
                 
-                H, W = mask.shape  # Should be 2D now
+                H, W = mask.shape
                 y_coords = np.linspace(0, 1, H)
                 x_coords = np.linspace(0, 1, W)
                 grid_y, grid_x = np.meshgrid(y_coords, x_coords, indexing='ij')
                 
-                # Get observation point positions
-                obs_indices = np.where(mask > 0)  # Ensure condition is explicit
-                obs_y, obs_x = obs_indices[0], obs_indices[1]  # Extract row and column indices separately
+            # Spatial observation mask
+                obs_indices = np.where(mask > 0)
+                obs_y, obs_x = obs_indices[0], obs_indices[1]
                 
-                # Ensure there are observation points
+            # Spatial observation mask
                 if len(obs_y) == 0:
-                    logger.warning(f"No observation points found, using uniform weights")
+                    logger.warning(f"No soundings found, applying uniform spatial weights")
                     return np.ones((H, W)) * 0.5
                     
-                # Convert to normalized coordinates
+            # Physical depth normalized to [-1, 1] for Channel 2
                 obs_y = obs_y / (H - 1)
                 obs_x = obs_x / (W - 1)
                 
-                # Initialize weight matrix
+            # Check model parameter initialization
                 weights = np.zeros((H, W))
                 
-                # Calculate influence of each observation point
+            # Spatial observation mask
                 for y, x in zip(obs_y, obs_x):
-                    # Calculate distance to current observation point
+            # Spatial observation mask
                     dist = np.sqrt((grid_y - y)**2 + (grid_x - x)**2)
-                    # Calculate weight using exponential decay
+            # Spatial and temporal decay weights
                     weight = np.exp(-dist / decay)
-                    # Update weight matrix (take maximum)
+            # Spatial and temporal decay weights
                     weights = np.maximum(weights, weight)
                 
-                # Normalize weights to [0.3, 1] range, ensuring some weight even far from observation points
+            # Physical depth normalized to [-1, 1] for Channel 2
                 if weights.max() > weights.min():
                     weights = 0.3 + 0.7 * (weights - weights.min()) / (weights.max() - weights.min())
                 else:
@@ -652,9 +714,9 @@ class S3GMWrapper:
                     
                 return weights
 
-            # Calculate temporal weights
+            # Spatial and temporal decay weights
             def calculate_time_weights(num_frames, current_frame, decay=None):
-                """Calculate time-based weights"""
+                """Compute temporal decay weights."""
                 if decay is None:
                     decay = self.config.time_decay
                     
@@ -663,62 +725,63 @@ class S3GMWrapper:
                     time_diff = abs(i - current_frame)
                     weights[i] = np.exp(-time_diff * decay)
                 
-                # Normalize to [0.2, 1] range, ensuring historical data has influence
+            # Physical depth normalized to [-1, 1] for Channel 2
                 weights = 0.2 + 0.8 * (weights - weights.min()) / (weights.max() - weights.min())
                 return weights
 
-            # New mask weight calculation logic
-            # Calculate spatial weights once using original mask
+            # Spatial observation mask
+            # Spatial observation mask
             spatial_weights = calculate_spatial_weights(original_mask)
             
-            # Apply different temporal weights for each time step
+            # Spatial and temporal decay weights
             for t in range(T):
-                logger.info(f"Processing time step {t}, year {years[t]}")
+                logger.info(f"Processing frame {t}, Year {years[t]}")
                 time_weights = calculate_time_weights(T, t)
                 
-                # Apply weights to mask
+            # Spatial observation mask
                 for frame in range(T):
                     mask_weights = spatial_weights * time_weights[frame]
-                    # Normalize mask_weights to [0, 1]
+            # Physical depth normalized to [-1, 1] for Channel 2
                     min_w, max_w = mask_weights.min(), mask_weights.max()
                     if max_w > min_w:
                         normalized_mask_weights = (mask_weights - min_w) / (max_w - min_w)
                     else:
-                        normalized_mask_weights = np.ones_like(mask_weights) * 0.5 # If all weights are same, set to 0.5
-                    # Apply normalized weights
+                        normalized_mask_weights = np.ones_like(mask_weights) * 0.5
+                    # ******************************************
+            # Physical depth normalized to [-1, 1] for Channel 2
                     input_tensor[0, frame, 3] = torch.from_numpy(normalized_mask_weights).to(self.device)
             
             return input_tensor
             
         except Exception as e:
-            logger.error(f"Failed to prepare conditional sampling data: {str(e)}")
+            logger.error(f"Failed to prepare condition sampling data: {str(e)}")
             raise
 
     def _run_diffusion(self, input_tensor, transform_fn=None):
-        """Run diffusion process"""
+        """Execute diffusion reverse trajectory."""
         try:
-            # Extract condition info from input_tensor
-            # Assuming input_tensor shape is [1, num_frames, channels, height, width]
-            # with depth channel at index 2, mask channel at index 3
+            # Internal processing step
+            # Internal processing step
+            # Spatial observation mask
             
-            # Extract and preprocess condition data
-            depth_channel = input_tensor[:, :, 2:3]  # Depth channel
-            mask_channel = input_tensor[:, :, 3:4]  # Mask channel
+            # Internal processing step
+            depth_channel = input_tensor[:, :, 2:3]
+            mask_channel = input_tensor[:, :, 3:4]
             
-            # Store condition data for score_fn use
+            # Internal processing step
             self.condition_data = {
-                'depth': depth_channel.clone(),  # Observation depth
-                'mask': mask_channel.clone(),    # Observation mask
-                'input_tensor': input_tensor.clone()  # Complete input
+                'depth': depth_channel.clone(),
+                'mask': mask_channel.clone(),
+                'input_tensor': input_tensor.clone()
             }
             
-            # Check condition data
-            logger.info(f"Diffusion process input check:")
+            # Check data validity
+            logger.info(f"Diffusion process input inspection:")
             logger.info(f"- Input tensor shape: {input_tensor.shape}")
             logger.info(f"- Depth channel range: [{depth_channel.min().item():.4f}, {depth_channel.max().item():.4f}]")
-            logger.info(f"- Total 1s in mask channel: {mask_channel.sum().item()}")
+            logger.info(f"- Observation mask active count: {mask_channel.sum().item()}")
             
-            # Ensure SDE parameters are on correct device
+            # Internal processing step
             if hasattr(self.sde, 'discrete_betas'):
                 self.sde.discrete_betas = self.sde.discrete_betas.to(self.device)
             if hasattr(self.sde, 'alphas'):
@@ -726,77 +789,69 @@ class S3GMWrapper:
             if hasattr(self.sde, 'alphas_cumprod'):
                 self.sde.alphas_cumprod = self.sde.alphas_cumprod.to(self.device)
 
-            # Define network forward function
+            # Internal processing step
             def net_fn(x, t):
                 B, T = x.shape[:2]
                 
-                # Prepare default masks
+            # Spatial observation mask
                 latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
                 obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
                 
-                # Try to extract mask channel from input_tensor (without logging)
+            # Spatial observation mask
                 try:
                     if isinstance(input_tensor, torch.Tensor):
-                        if input_tensor.shape[2] > 3:  # Check if there are enough channels
-                            # Extract observation mask channel (index 3) and check for non-zero values
+                        if input_tensor.shape[2] > 3:
+            # Check data validity
                             mask_channel = input_tensor[0, :, 3:4].to(self.device)
                             
-                            # Process each time step separately
+            # Internal processing step
                             for t_idx in range(T):
-                                if t_idx < mask_channel.shape[0]:  # Ensure index is valid
-                                    # Check if current time step has observation points
+                                if t_idx < mask_channel.shape[0]:
+            # Check data validity
                                     if torch.any(mask_channel[t_idx] > 0):
-                                        # Mark time step as having observations
+            # Internal processing step
                                         obs_mask[0, t_idx, 0, 0, 0] = 1.0
                 except Exception as e:
-                    # Handle errors silently
+            # Internal processing step
                     pass
                 
-                # Monitor input state
+            # Internal processing step
                 if torch.isnan(x).any():
                     logger.error(f"net_fn input x contains NaN - shape: {x.shape}")
                     logger.error(f"Timestep t: {t.item() if isinstance(t, torch.Tensor) else t}")
                     raise ValueError("net_fn input contains NaN")
 
+            # Internal processing step
+            # Internal processing step
+            # Hard conditioning: soundings injected directly at observation points
                 with torch.no_grad():
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            # Spatial observation mask
+            # Spatial observation mask
+            # U-Net learns spatial mapping from sparse soundings to full domain
+            # Internal processing step
+                    cond_x = input_tensor.to(self.device)
+                    if cond_x.shape[1] != x.shape[1]:
+            # Internal processing step
+            # Internal processing step
+                        cond_x = cond_x[:, :x.shape[1]].clone()
+                        if cond_x.shape[1] < x.shape[1]:
+                            pad = x.shape[1] - cond_x.shape[1]
+                            cond_x = torch.cat([cond_x, cond_x[:, -1:].repeat(1, pad, 1, 1, 1)], dim=1)
+            # Spatial observation mask
+                    obs_mask_pixel = cond_x[:, :, 3:4] > 0.5  # [B, T, 1, H, W]
                     score, _ = self.model(
                         x=x,
-                        x0=x,
+                        x0=cond_x,
                         timesteps=t,
                         latent_mask=latent_mask,
-                        obs_mask=obs_mask,
+                        obs_mask=obs_mask_pixel.float(),
                         frame_indices=torch.arange(T, device=self.device).expand(B, -1)
                     )
-                    
-                    # Check if score is all NaN
-                    if torch.isnan(score).any():
-                        nan_locations = torch.isnan(score)
-                        nan_count = nan_locations.sum().item()
-                        logger.error(f"Score contains {nan_count} NaN values at timestep {t}")
-                        
-                        # Only calculate statistics if non-NaN values exist
-                        valid_score = score[~torch.isnan(score)]
-                        if valid_score.numel() > 0:
-                            logger.error(f"Score stats: min={valid_score.min().item():.4f}, "
-                                       f"max={valid_score.max().item():.4f}, "
-                                       f"mean={valid_score.mean().item():.4f}")
-                        else:
-                            logger.error("Score is all NaN values!")
-                        
-                        # Log NaN positions
-                        nan_indices = nan_locations.nonzero()
-                        if len(nan_indices) > 0:
-                            logger.error(f"First NaN position: {nan_indices[0].tolist()}")
-                        
-                        raise ValueError(f"Score contains NaN at timestep {t}")
-                    
-                    # Only log score range in debug mode
-                    if self.config.stability.get('debug', False):
-                        logger.debug(f"Score range at timestep {t}: [{score.min().item():.4f}, {score.max().item():.4f}]")
                 
                 return score
 
-            # Ensure input tensor is on correct device and convert type
+            # Internal processing step
             if isinstance(input_tensor, np.ndarray):
                 x = torch.from_numpy(input_tensor).to(self.device, non_blocking=True)
             else:
@@ -805,20 +860,19 @@ class S3GMWrapper:
             if x.dtype != torch.float32:
                 x = x.float()
             
-            # Detailed input data check
+            # Check data validity
             if torch.isnan(x).any() or torch.isinf(x).any():
                 nan_count = torch.isnan(x).sum().item()
                 inf_count = torch.isinf(x).sum().item()
-                logger.error(f"Input tensor contains {nan_count} NaN and {inf_count} Inf values")
-                logger.error(f"Input stats: min={x[~torch.isnan(x) & ~torch.isinf(x)].min().item():.4f}, "
-                            f"max={x[~torch.isnan(x) & ~torch.isinf(x)].max().item():.4f}")
+                logger.error(f"Input tensor contains {nan_count} NaNs and {inf_count} Infs")
+                logger.error(f"Input stats: min={x[~torch.isnan(x) & ~torch.isinf(x)].min().item():.4f}, max={x[~torch.isnan(x) & ~torch.isinf(x)].max().item():.4f}")
                 raise ValueError("Input tensor contains NaN or Inf values")
             
-            # Clear GPU cache
+            # Internal processing step
             torch.cuda.empty_cache()
             
-            # Add input check
-            logger.info(f"Diffusion process input check:")
+            # Check data validity
+            logger.info(f"Diffusion process input inspection:")
             logger.info(f"- Input tensor shape: {x.shape}")
             if transform_fn:
                 test_output = transform_fn(x.cpu().numpy())
@@ -826,10 +880,9 @@ class S3GMWrapper:
                     logger.info(f"- Transform function output shape: {test_output.shape}")
                 else:
                     logger.info(f"- Transform function output shape: {test_output.shape}")
-
-            # Execute diffusion process
+            # Execute reverse diffusion trajectory
             try:
-                # Use torch.amp.autocast context manager
+            # Internal processing step
                 with torch.amp.autocast('cuda', enabled=False):
                     result_np, _ = complete_video_pc_dps(
                         self.config,
@@ -846,67 +899,67 @@ class S3GMWrapper:
                         device=self.device
                     )
             except RuntimeError as e:
-                logger.error(f"Diffusion process runtime error: {str(e)}")
-                logger.error(f"- Configuration info:")
+                logger.error(f"Diffusion runtime error: {str(e)}")
+                logger.error(f"- Configuration details:")
                 logger.error(f"  - num_frames: {self.config.num_frames}")
                 logger.error(f"  - num_components: {self.config.num_components}")
                 logger.error(f"  - sampling steps: {self.config.sampling['num_steps']}")
                 raise
             
-            # Result processing section
+            # Internal processing step
             def process_results(result_tensor):
-                # First check if it's a tensor, convert to numpy if so
+            # Check data validity
                 if isinstance(result_tensor, torch.Tensor):
                     result_np = result_tensor.cpu().numpy()
                 else:
-                    result_np = result_tensor  # Already numpy array
+                    result_np = result_tensor
 
-                # Identify land regions (using land_value from config)
+            # Internal processing step
                 land_mask = np.abs(result_np - self.config.land_value) < 0.1
                 
-                # Only log data range, no clipping
+            # Internal processing step
                 valid_data = result_np[~land_mask & ~np.isnan(result_np)]
                 if len(valid_data) > 0:
                     orig_min, orig_max = np.min(valid_data), np.max(valid_data)
-                    logger.info(f"Original result range: [{orig_min:.4f}, {orig_max:.4f}]")
+                    logger.info(f"Raw prediction range: [{orig_min:.4f}, {orig_max:.4f}]")
                 
-                # Keep land region values unchanged
+            # Internal processing step
                 result_np[land_mask] = self.config.land_value
                 
                 return result_np
 
-            # Process results after diffusion process ends
-            result = result_np  # Save original result first
+            # Execute reverse diffusion trajectory
+            result = result_np
             
-            # Apply transform function if available
+            # Internal processing step
             if transform_fn is not None:
                 result = transform_fn(result)
             
-            # Final process_results call, just for logging range
+            # Internal processing step
             result = process_results(result)
 
-            return result # Return process_results result directly
+            return result
 
         except Exception as e:
             logger.error(f"Diffusion process failed: {str(e)}")
             raise
 
     def _run_sampling(self, input_tensor):
-        """Execute conditional sampling"""
+        """Execute conditional diffusion sampling"""
         try:
             def adaptive_transform_sampling(x):
-                """Adaptive data transform function for sampling"""
+                """Adaptive data transformation for sampling."""
                 if isinstance(x, np.ndarray):
                     x = torch.from_numpy(x).to(self.device)
                 
-                # Identify land
+            # Internal processing step
                 land_mask = torch.abs(x - 1.5) < 0.1
                 
-                # Handle NaN and infinity values with wider range
+            # Internal processing step
                 x = torch.where(land_mask, x, 
                                torch.nan_to_num(x, nan=0.0, posinf=20.0, neginf=-20.0))
                 
-                # Log data range
+            # Internal processing step
                 if not hasattr(adaptive_transform_sampling, "logged"):
                     if torch.isfinite(x).any():
                         min_val = x[torch.isfinite(x)].min().item()
@@ -916,21 +969,21 @@ class S3GMWrapper:
                 
                 return x
 
-            # Adjust input_tensor
+            # Internal processing step
             try:
                 nf = self.config.num_frames
                 ns = self.config.sampling['num_steps']
                 ol = self.config.sampling['overlap']
-                b = max(1, int(ns // max(1, (nf - ol))) + 1)  # Prevent division by zero
+                b = max(1, int(ns // max(1, (nf - ol))) + 1)
                 ns_real = b * (nf - ol) + ol
             
-                # Create adjusted input_tensor
+            # Internal processing step
                 adjusted_input_tensor = torch.zeros(
                     (1, ns_real, input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4]), 
                     device=self.device
                 )
             
-                # Fill adjusted_input_tensor
+            # Internal processing step
                 for i in range(b):
                     i_inv = b - i - 1
                     start_idx = i_inv * (nf - ol)
@@ -941,31 +994,31 @@ class S3GMWrapper:
                             src_data = input_tensor[:, :src_end, :input_tensor.shape[2]]
                             adjusted_input_tensor[:, start_idx:start_idx+src_end, :input_tensor.shape[2]] = src_data
             
-                # Copy auxiliary channels
+            # Internal processing step
                 if input_tensor.shape[2] < adjusted_input_tensor.shape[2]:
                     aux_channels = input_tensor[:, 0:1, input_tensor.shape[2]:]
                     adjusted_input_tensor[:, :, input_tensor.shape[2]:] = aux_channels
             
-                logger.info(f"Adjusted input_tensor shape: {input_tensor.shape} -> {adjusted_input_tensor.shape}")
+                logger.info(f"Adjusted input tensor shape: {input_tensor.shape} -> {adjusted_input_tensor.shape}")
             except Exception as e:
-                logger.error(f"Error adjusting input_tensor: {e}")
-                # Use original input_tensor on error
+                logger.error(f"Error adjusting input tensor: {e}")
+            # Internal processing step
                 adjusted_input_tensor = input_tensor
         
-            # Execute diffusion process
+            # Execute reverse diffusion trajectory
             return self._run_diffusion(
                 adjusted_input_tensor,
                 transform_fn=adaptive_transform_sampling
             )
         
         except Exception as e:
-            logger.error(f"Conditional sampling execution failed: {str(e)}")
+            logger.error(f"Conditional sampling failed: {str(e)}")
             raise
 
     def _run_proper_pretrain(self, input_tensor, num_epochs=1500, batch_size=1, save_interval=50):
-        """Execute pretraining using standard diffusion loss function"""
+        """Execute pretraining with diffusion objective."""
         try:
-            # Ensure input is tensor and on correct device
+            # Internal processing step
             if isinstance(input_tensor, np.ndarray):
                 x = torch.from_numpy(input_tensor).to(self.device)
             else:
@@ -974,88 +1027,110 @@ class S3GMWrapper:
             if x.dtype != torch.float32:
                 x = x.float()
             
-            # Use more robust optimizer configuration
+            # Internal processing step
             optimizer = torch.optim.AdamW(
                 self.model.parameters(), 
-                lr=1e-5,  # Lower learning rate to 1e-5
+                lr=1e-5,
                 weight_decay=1e-4
             )
             
-            # Use cosine annealing learning rate schedule
-            T_max = num_epochs # Total epochs as cosine period length
+            # Step CosineAnnealingLR scheduler after warmup
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            #     optimizer,
+            #     mode='min',
+            # Internal processing step
+            #     patience=50,
+            #     min_lr=1e-7,
+            # )
+            T_max = num_epochs
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, 
                 T_max=T_max, 
-                eta_min=1e-7 # Minimum learning rate
+                eta_min=1e-7
             )
-            # Learning rate warmup parameters
+                # Learning rate warmup step
             warmup_epochs = 10
             initial_lr = 1e-5
+            # ------------------------
             
-            # Initialize GradScaler for mixed precision
+            # Check model parameter initialization
             scaler = GradScaler('cuda', enabled=self.config.use_amp)
             
-            # Improved early stopping logic
+            # Track running loss window for early stopping
             min_loss = float('inf')
-            patience = 50  # Increased patience (from 8 to 50)
+            patience = 50
             patience_counter = 0
-            window_size = 5  # Use window average loss
+            window_size = 5
             loss_window = []
             
-            # Pretraining loop
+            # Internal processing step
             for epoch in range(num_epochs):
                 self.model.train()
                 
-                # Implement learning rate warmup
+                # Learning rate warmup step
                 if epoch < warmup_epochs:
                     lr_scale = (epoch + 1) / warmup_epochs
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = initial_lr * lr_scale
                     current_lr = initial_lr * lr_scale
-                    if (epoch + 1) % 10 == 0: # Log LR at warmup end and every 10 epochs
+                    if (epoch + 1) % 10 == 0:
                         logger.info(f"Epoch {epoch+1}/{num_epochs}: Warmup - LR set to {current_lr:.2e}")
-                elif epoch == warmup_epochs: # After warmup, restore optimizer LR, let scheduler take over
+                elif epoch == warmup_epochs:
                      for param_group in optimizer.param_groups:
                           param_group['lr'] = initial_lr
                      current_lr = initial_lr
                      logger.info(f"Epoch {epoch+1}/{num_epochs}: Warmup finished - LR set to {current_lr:.2e}")       
                 else:
-                     current_lr = optimizer.param_groups[0]['lr'] # Get current LR for logging
-                     if (epoch + 1) % 100 == 0: # Log LR every 100 epochs
+                     current_lr = optimizer.param_groups[0]['lr']
+                     if (epoch + 1) % 100 == 0:
                           logger.info(f"Epoch {epoch+1}/{num_epochs}: Current LR = {current_lr:.2e}")
+                # ------------------------
 
-                optimizer.zero_grad() # Move to loop start
+                optimizer.zero_grad()
                 
-                # Use autocast context manager for forward pass
+            # Internal processing step
                 with autocast('cuda', enabled=self.config.use_amp):
-                    # Randomly generate timesteps
+            # Internal processing step
                     t = torch.rand(batch_size, device=self.device) * (1.0 - 1e-5) + 1e-5
                     
-                    # Add random noise
+            # Internal processing step
                     mean, std = self.sde.marginal_prob(x, t)
                     z = torch.randn_like(x)
                     perturbed_x = mean + std[:, None, None, None, None] * z
                     perturbed_x.requires_grad_(True)
                     
-                    # Create random mask for conditional training
+            # Spatial observation mask
+            # Pretraining embeds sparse sounding measurements into Channel 2
+            # U-Net learns spatial mapping from sparse soundings to full domain
+            # Spatial observation mask
+                    obs_mask_base = (x[:, :, 3:4] > 0.5).float()
+            # Spatial observation mask
                     random_mask = torch.zeros_like(x[:, :, 3:4])
-                    random_mask.bernoulli_(0.2)  # 20% of points as condition
+            # Spatial observation mask
+                    for t_idx in range(x.shape[1]):
+                        obs_positions = (obs_mask_base[0, t_idx] > 0.5).nonzero()
+                        if len(obs_positions) > 0:
+                            n_keep = max(1, int(len(obs_positions) * 0.7))
+                            perm = torch.randperm(len(obs_positions))[:n_keep]
+                            for pi in perm:
+                                yy, xx = obs_positions[pi][0].item(), obs_positions[pi][1].item()
+                                random_mask[0, t_idx, 0, yy, xx] = 1.0
                     
-                    # Extract these points as condition
+            # Internal processing step
                     condition_x = x.clone()
                     
-                    # Prepare model input
+            # Internal processing step
                     B, T = x.shape[:2]
                     latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
                     obs_mask = random_mask
                     
-                    # Define simple wrapper to handle non-Tensor and fixed parameters
+            # Internal processing step
                     def model_forward_wrapper(px, cx, ts, lm, om, fi):
-                        # return_attn_weights=False is fixed
+            # Internal processing step
                         return self.model(x=px, x0=cx, timesteps=ts, latent_mask=lm, obs_mask=om, frame_indices=fi, return_attn_weights=False)
 
-                    # Use checkpoint to call wrapper
-                    # Note: checkpoint doesn't directly return attn_weights, so we use _ for second return value
+            # Internal processing step
+            # Internal processing step
                     score, _ = checkpoint(
                         model_forward_wrapper, 
                         perturbed_x, 
@@ -1064,32 +1139,32 @@ class S3GMWrapper:
                         latent_mask, 
                         obs_mask, 
                         torch.arange(T, device=self.device).expand(B, -1),
-                        use_reentrant=True # Use default use_reentrant
+                        use_reentrant=True
                     )
                     
-                    # Calculate loss
+                    # Compute v-parameterization loss
                     if self.config.parameterization == 'v':
                         # v-parameterization loss
-                        # Use marginal_prob to get std (sigma_t)
+            # Internal processing step
                         _, std_t = self.sde.marginal_prob(x, t) # mean is not needed here
                         sigma_t = std_t[:, None, None, None, None]
-                        # Calculate alpha_t = sqrt(1 - sigma_t^2)
-                        alpha_t = torch.sqrt(1. - sigma_t**2 + self.config.eps) # Add eps to avoid sqrt(0)
+            # Internal processing step
+                        alpha_t = torch.sqrt(1. - sigma_t**2 + self.config.eps)
                         
-                        # Calculate v target
-                        v_target = alpha_t * z - sigma_t * x # z is noise epsilon, x is clean data x0
+            # Internal processing step
+                        v_target = alpha_t * z - sigma_t * x
                         loss = torch.mean((score - v_target) ** 2)
                     else:
-                        # epsilon-parameterization loss (original logic)
+            # Internal processing step
                         _, std_t = self.sde.marginal_prob(x, t)
                         target = -z / std_t[:, None, None, None, None]
                         loss = torch.mean((score - target) ** 2)
                 
-                # Check for divergence
+            # Check data validity
                 is_divergent = loss.item() > 1000 or np.isnan(loss.item())
                 
                 if not is_divergent:
-                    # Use scaler for backward pass and optimization (only when loss is normal)
+                    # Compute v-parameterization loss
                     scaler.scale(loss).backward() # 1. Scale loss and backprop
 
                     # 2. Unscale gradients before clipping
@@ -1106,25 +1181,25 @@ class S3GMWrapper:
                 else:
                     logger.warning(f"Epoch {epoch+1}: Loss divergence detected (loss={loss.item():.4e}), skipping gradient update")
                 
-                # Record and early stop (use original loss value, record NaN or large value even if divergent)
+            # Track running loss window for early stopping
                 loss_value_for_tracking = loss.item()
                 loss_window.append(loss_value_for_tracking)
                 if len(loss_window) > window_size:
                     loss_window.pop(0)
                 
-                # Exclude NaN/Inf when calculating average loss
+            # Track running loss window for early stopping
                 finite_losses = [l for l in loss_window if np.isfinite(l)]
                 if not finite_losses:
-                    avg_loss = float('inf') # If all values in window are invalid
+                    avg_loss = float('inf')
                 else:    
                     avg_loss = sum(finite_losses) / len(finite_losses)
 
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss_value_for_tracking:.4f}, Avg Loss: {avg_loss:.4f}")
                     
-                    # Use average loss for early stopping (only when avg_loss is valid)
+            # Track running loss window for early stopping
                     if np.isfinite(avg_loss):
-                        if avg_loss < min_loss * 0.95:  # Only reset on significant improvement
+                        if avg_loss < min_loss * 0.95:
                             min_loss = avg_loss
                             patience_counter = 0
                             logger.info(f"  (Avg loss improved to {min_loss:.4f})")
@@ -1136,10 +1211,10 @@ class S3GMWrapper:
                             logger.info(f"Early stopping at epoch {epoch+1}")
                             break
                 
-                # --- Modified: Call CosineAnnealingLR at end of each epoch --- 
+            # Step CosineAnnealingLR scheduler after warmup
                 # if np.isfinite(avg_loss):
-                #     scheduler.step(avg_loss)  # ReduceLROnPlateau uses average loss
-                # Only update CosineAnnealingLR scheduler after warmup period ends
+            # Track running loss window for early stopping
+            # Step CosineAnnealingLR scheduler after warmup
                 if epoch >= warmup_epochs:
                     scheduler.step()
                 # --------------------------------------------------
@@ -1147,23 +1222,23 @@ class S3GMWrapper:
             return True
         
         except Exception as e:
-            logger.error(f"Pre-training failed: {str(e)}")
+            logger.error(f"Pretraining failed: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False
 
     def _validate_model(self, x, condition_x):
-        """Validate model performance"""
+        """Validate model forward output."""
         self.model.eval()
         with torch.no_grad():
             test_t = torch.ones(1, device=self.device) * 0.5
             B, T = x.shape[:2]
             
-            # Create validation mask
+            # Spatial observation mask
             latent_mask = torch.ones([B, T, 1, 1, 1]).float().to(self.device)
             obs_mask = torch.zeros([B, T, 1, 1, 1]).float().to(self.device)
             
-            # Test model output
+            # Internal processing step
             test_score, _ = self.model(
                 x=x,
                 x0=condition_x,
@@ -1173,11 +1248,11 @@ class S3GMWrapper:
                 frame_indices=torch.arange(T, device=self.device).expand(B, -1)
             )
             
-            # Record validation results
-            logger.info(f"Validation - Model output range: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
+            # Internal processing step
+            logger.info(f"Validation forward output range: [{test_score.min().item():.4f}, {test_score.max().item():.4f}]")
 
     def _check_model_weights(self):
-        """Check model weight validity and report at lower log level"""
+        """Inspect parameter weights for NaNs/Infs."""
         try:
             total_params = 0
             zero_params = 0
@@ -1191,91 +1266,91 @@ class S3GMWrapper:
                 inf_params += torch.isinf(param).sum().item()
                 nan_params += torch.isnan(param).sum().item()
                 
-                # Only log individual parameter zero values at debug level
+            # Internal processing step
                 if zero_count == param.numel() and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"{name} weights are all zeros")
-                    # Reinitialize with normal distribution
+                    logger.debug(f"{name} weights are all zero")
+            # Check model parameter initialization
                     if 'bias' in name:
                         nn.init.zeros_(param)
                     else:
                         nn.init.normal_(param, mean=0.0, std=0.02)
             
-            # Only log warning when serious issues occur
+            # Internal processing step
             if inf_params > 0 or nan_params > 0:
-                logger.error("Model weights contain infinity or NaN!")
-                logger.error(f"- Infinity parameter ratio: {inf_params/total_params:.2%}")
+                logger.error("Model weights contain Infs or NaNs!")
+                logger.error(f"- Inf parameter ratio: {inf_params/total_params:.2%}")
                 logger.error(f"- NaN parameter ratio: {nan_params/total_params:.2%}")
                 return False
             
-            # Change weight statistics to single-line INFO level log
-            if zero_params/total_params > 0.1:  # Only log if zero parameter ratio exceeds 10%
+            # Spatial and temporal decay weights
+            if zero_params/total_params > 0.1:
                 logger.info(f"Model parameter stats - Total: {total_params}, Zero ratio: {zero_params/total_params:.2%}")
             
             return True
             
         except Exception as e:
-            logger.error(f"Failed to check model weights: {str(e)}")
+            logger.error(f"Parameter check failed: {str(e)}")
             raise
 
     def _manage_memory(self):
-        """Memory management"""
+        """GPU memory cleanup."""
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()  # Ensure all CUDA operations complete
+        torch.cuda.synchronize()
 
     def _get_score_fn(self):
-        """Get score function"""
-        # Get y data (observed depth) and mask (observation mask)
-        # Assume input_tensor received in _run_diffusion contains depth and mask channels
+        """Construct score evaluation function."""
+            # Spatial observation mask
+            # Spatial observation mask
         
         def score_fn(x, t):
-            """Score function, calculate score at given noise level t"""
+            """Evaluate score at noise level t."""
             # x: [batch_size, num_frames, channels, height, width]
             # t: [batch_size]
             
-            # Get original shape
+            # Internal processing step
             shape = x.shape
             
-            # Ensure t is a vector
+            # Internal processing step
             t = t.view(-1)
             
-            # Extract observation data and mask from input_tensor
-            # Assume preprocessed condition data is stored in self.condition_data
+            # Spatial observation mask
+            # Internal processing step
             if hasattr(self, 'condition_data') and self.condition_data is not None:
-                # Get condition data
-                x0 = self.condition_data['depth'].to(x.device)  # Depth channel, shape should match x
-                obs_mask = self.condition_data['mask'].to(x.device)  # Mask channel, indicates observation point locations
+            # Internal processing step
+                x0 = self.condition_data['depth'].to(x.device)
+                obs_mask = self.condition_data['mask'].to(x.device)
                 
-                # Log (on first call)
+            # Internal processing step
                 if not hasattr(score_fn, 'logged_condition'):
-                    logger.info(f"Condition depth range: [{x0.min().item():.4f}, {x0.max().item():.4f}]")
-                    logger.info(f"Number of observation points: {obs_mask.sum().item()}")
+                    logger.info(f"Conditioning depth range: [{x0.min().item():.4f}, {x0.max().item():.4f}]")
+                    logger.info(f"Active sounding count: {obs_mask.sum().item()}")
                     score_fn.logged_condition = True
             else:
-                # If no condition data, use zero initialization
+            # Check model parameter initialization
                 x0 = torch.zeros_like(x)
                 obs_mask = torch.zeros((shape[0], shape[1], 1, shape[3], shape[4]), device=x.device)
-                logger.warning("No condition data found, using zero initialization!")
+                logger.warning("No conditioning data found, zero initializing!")
             
-            # Enhance condition representation
-            # 1. Increase condition mask channel weight to make model focus more on observation points
-            enhanced_obs_mask = obs_mask * 2.0  # Increase mask weight
+            # Internal processing step
+            # Spatial observation mask
+            enhanced_obs_mask = obs_mask * 2.0
             
-            # 2. Create condition difference channel - help model understand difference between observation points and current prediction
+            # Spatial observation mask
             with torch.no_grad():
                 _, x_noisy, _ = self.sde.marginal_prob(x0, t.reshape(-1, 1, 1, 1, 1))
-                condition_diff = (x - x_noisy) * obs_mask  # Indicate difference direction of condition points
+                condition_diff = (x - x_noisy) * obs_mask
             
-            # Unified mask for attention mechanism
+            # Spatial observation mask
             latent_mask = torch.zeros_like(obs_mask)
             
-            # Call model to compute score, pass enhanced condition information
+            # Internal processing step
             score, _ = self.model(
                 x, 
                 x0=x0, 
                 timesteps=t, 
-                obs_mask=enhanced_obs_mask,  # Enhanced mask
+                obs_mask=enhanced_obs_mask,
                 latent_mask=latent_mask,
-                frame_indices=None,  # Provide frame index information
+                frame_indices=None,
                 return_attn_weights=False
             )
             

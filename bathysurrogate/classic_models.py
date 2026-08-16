@@ -11,11 +11,10 @@ from sklearn.model_selection import KFold
 logger = logging.getLogger(__name__)
 
 class ClassicModels:
-    """Classic bathymetry inversion models"""
+    """Classic and enhanced machine learning models for bathymetry inversion."""
     
     def __init__(self, config_path: str = 'configs/classic_models.yaml'):
-        """Initialize classic bathymetry inversion models"""
-        self.config_path = Path(config_path)
+        """Initialize classic bathymetry inversion models."""
         self.load_config()
         self.llm_model = LinearRegression()
         self.rf_model = RandomForestRegressor(
@@ -27,10 +26,10 @@ class ClassicModels:
         )
     
     def load_config(self) -> None:
-        """Load configuration file"""
+        """Load configuration file."""
         try:
             if not self.config_path.exists():
-                logger.warning(f"Config file {self.config_path} does not exist, using default parameters")
+                logger.warning(f"Configuration file {self.config_path} not found, using default parameters")
                 self._set_default_params()
                 return
                 
@@ -61,21 +60,47 @@ class ClassicModels:
                     'band_ratio': {'use_log_transform': True},
                     'depth_index': {'use_normalized_bands': True}
                 }),
-                'stats': {},  # Will be updated during training
-                'feature_importances': {}  # Will be updated during training
+                'stats': {},  # Updated during training
+                'feature_importances': {}  # Updated during training
             }
             
         except Exception as e:
-            logger.error(f"Failed to load config file: {str(e)}")
+            logger.error(f"Failed to load configuration file: {str(e)}")
             self._set_default_params()
     
     def _set_default_params(self) -> None:
-        """Set default parameters"""
+        """Set default parameters."""
         self.llm_params = {}
         self.rf_params = {}
 
-    def train_rf(self, blue_band: np.ndarray, green_band: np.ndarray, depth: np.ndarray) -> float:
-        """Train Random Forest model"""
+    def _nearest_features(self, coords, train_coords, train_depths, exclude_self=True):
+        """Extract nearest training sounding features: [distance, depth]. If exclude_self=True, excludes coincident points."""
+        if train_coords is None or len(train_coords) == 0:
+            return np.zeros((len(coords), 2))
+        d = np.sqrt(((train_coords[None, :, :] - coords[:, None, :]) ** 2).sum(axis=-1))  # (N, M)
+        if exclude_self:
+            # Exclude self: points with matching coordinates on diagonal
+            for i in range(len(coords)):
+                match = np.where((train_coords == coords[i]).all(axis=1))[0]
+                if len(match) > 0:
+                    d[i, match[0]] = np.inf
+        j = np.argmin(d, axis=1)
+        dist = np.take_along_axis(d, j[:, None], axis=1)[:, 0]
+        depth = train_depths[j]
+        return np.column_stack([dist, depth])
+    def train_rf(self, blue_band: np.ndarray, green_band: np.ndarray, depth: np.ndarray,
+                 gebco_band: np.ndarray = None, coords: np.ndarray = None,
+                 use_enhanced: bool = False) -> float:
+        """Train Random Forest model.
+
+        Args:
+            blue_band: Blue band reflectance grid or array.
+            green_band: Green band reflectance grid or array.
+            depth: Observed soundings in meters.
+            gebco_band: GEBCO bathymetric grid for enhanced spatial features.
+            coords: Normalized observation coordinates (N, 2).
+            use_enhanced: Whether to use 12-feature enhanced specification (spectral + GEBCO + spatial + NN).
+        """
         try:
             # 1. Data validation
             valid_mask = np.logical_and.reduce((
@@ -89,7 +114,7 @@ class ClassicModels:
             ))
         
             # 2. Enhanced feature engineering
-            # 2.1 Basic features (standardized)
+            # 2.1 Basic normalized features
             blue_norm = (blue_band - np.mean(blue_band[valid_mask])) / np.std(blue_band[valid_mask])
             green_norm = (green_band - np.mean(green_band[valid_mask])) / np.std(green_band[valid_mask])
         
@@ -102,7 +127,7 @@ class ClassicModels:
             log_green = np.log(green_band)
             log_ratio = log_blue - log_green
         
-            # 2.4 Depth-related features
+            # 2.4 Depth index features
             depth_index = (blue_norm - green_norm) / (blue_norm + green_norm)
         
             X = np.column_stack((
@@ -117,18 +142,47 @@ class ClassicModels:
             feature_names = ['blue', 'green', 'band_ratio', 'log_blue', 
                             'log_green', 'log_ratio', 'depth_index']
             y = depth[valid_mask]
+            # 2.5 Enhanced features: GEBCO + coordinates + nearest neighbor soundings
+            enhanced_used = False
+            if use_enhanced and gebco_band is not None:
+                if len(gebco_band.shape) == 2 and coords is not None:
+                    H_g, W_g = gebco_band.shape
+                    g_pts = np.array([
+                        -gebco_band[min(int(c[0]*(H_g-1)), H_g-1), min(int(c[1]*(W_g-1)), W_g-1)]
+                        if gebco_band[min(int(c[0]*(H_g-1)), H_g-1), min(int(c[1]*(W_g-1)), W_g-1)] < 0
+                        else gebco_band[min(int(c[0]*(H_g-1)), H_g-1), min(int(c[1]*(W_g-1)), W_g-1)]
+                        for c in coords])
+                    X = np.column_stack([X, g_pts[valid_mask]])
+                else:
+                    g = np.where(gebco_band < 0, -gebco_band, gebco_band)
+                    X = np.column_stack([X, g[valid_mask]])
+                feature_names += ['gebco_depth']
+                enhanced_used = True
+            if use_enhanced and coords is not None:
+                X = np.column_stack([X, coords[valid_mask, 0], coords[valid_mask, 1]])
+                feature_names += ['coord_y', 'coord_x']
+                # Nearest neighbor features (excluding self during training)
+                nn = self._nearest_features(coords[valid_mask], coords[valid_mask], y, exclude_self=True)
+                X = np.column_stack([X, nn])
+                feature_names += ['nn_dist', 'nn_depth']
+                enhanced_used = True
+            self.rf_params['enhanced'] = enhanced_used
+            # Save training observation coordinates/depths for prediction inference
+            if use_enhanced and coords is not None:
+                self.rf_params['train_coords'] = coords[valid_mask].copy()
+            self.rf_params['train_depths'] = y.copy()
         
-            # 3. Optimized model parameters
+            # 3. Model hyperparameter configuration
             self.rf_model = RandomForestRegressor(
-                n_estimators=500,  # Increase number of trees
-                max_depth=25,      # Appropriately increase depth
+                n_estimators=500,
+                max_depth=25,
                 min_samples_split=2,
                 min_samples_leaf=1,
                 max_features='sqrt',
                 bootstrap=True,
                 random_state=42,
                 n_jobs=-1,
-                oob_score=True     # Enable out-of-bag scoring
+                oob_score=True
             )
         
             # 4. Train model
@@ -149,8 +203,13 @@ class ClassicModels:
                 'feature_importances': importances,
                 'oob_score': float(self.rf_model.oob_score_)
             }
+            if enhanced_used:
+                self.rf_params['enhanced'] = True
+            if use_enhanced and coords is not None:
+                self.rf_params['train_coords'] = coords[valid_mask].copy()
+                self.rf_params['train_depths'] = y.copy()
         
-            # 6. Log training information
+            # 6. Log training statistics
             logger.info(f"Training depth range: [{np.min(y):.2f}, {np.max(y):.2f}] m")
             logger.info(f"Blue band range: [{np.min(blue_band[valid_mask]):.2f}, {np.max(blue_band[valid_mask]):.2f}]")
             logger.info(f"Green band range: [{np.min(green_band[valid_mask]):.2f}, {np.max(green_band[valid_mask]):.2f}]")
@@ -165,33 +224,29 @@ class ClassicModels:
             logger.error(f"Random Forest training failed: {str(e)}")
             raise
 
-    def predict_rf(self, blue_band: np.ndarray, green_band: np.ndarray) -> np.ndarray:
-        """Random Forest model prediction"""
+    def predict_rf(self, blue_band: np.ndarray, green_band: np.ndarray,
+                   gebco_band: np.ndarray = None) -> np.ndarray:
+        """Predict bathymetry with Random Forest (automatically utilizes enhanced features if trained with them)."""
         try:
-            # Get parameters and statistics
             stats = self.rf_params['stats']
         
             # 1. Feature engineering
-            # 1.1 Basic features (standardized)
             blue_norm = (blue_band - stats['blue_mean']) / stats['blue_std']
             green_norm = (green_band - stats['green_mean']) / stats['green_std']
         
-            # 1.2 Band ratio features
             band_ratio = np.log(blue_band / green_band)
             band_ratio_norm = (band_ratio - stats['band_ratio_mean']) / stats['band_ratio_std']
         
-            # 1.3 Log-transformed features
             log_blue = np.log(blue_band)
             log_green = np.log(green_band)
             log_ratio = log_blue - log_green
         
-            # 1.4 Depth-related features
             depth_index = (blue_norm - green_norm) / (blue_norm + green_norm)
         
             H, W = blue_band.shape
             predictions = np.zeros((H, W))
            
-            # 2. Data validation
+            # 2. Data validation mask
             valid_mask = np.logical_and.reduce((
                 ~np.isnan(blue_band),
                 ~np.isnan(green_band),
@@ -210,18 +265,32 @@ class ClassicModels:
                     log_ratio[valid_mask],
                     depth_index[valid_mask]
                 ))
+                # 3.5 Enhanced features (consistent with training)
+                use_enhanced = self.rf_params.get('enhanced', False)
+                if use_enhanced:
+                    if gebco_band is not None:
+                        g = np.where(gebco_band < 0, -gebco_band, gebco_band)
+                        X = np.column_stack([X, g[valid_mask]])
+                    ys, xs = np.where(valid_mask)
+                    coords_full = np.column_stack([ys / (H - 1), xs / (W - 1)])
+                    train_coords = self.rf_params.get('train_coords')
+                    train_depths = self.rf_params.get('train_depths')
+                    if train_coords is not None and len(train_coords) > 0:
+                        X = np.column_stack([X, coords_full[:, 0], coords_full[:, 1]])
+                        nn = self._nearest_features(coords_full, train_coords, train_depths, exclude_self=False)
+                        X = np.column_stack([X, nn])
             
-                # 4. Model prediction
+                # 4. Predict
                 pred = self.rf_model.predict(X)
             
-                # 5. Fill predictions back to original shape
+                # 5. Populate predictions into grid
                 predictions[valid_mask] = pred
             
                 # 6. Apply depth range limits
-                predictions[predictions < 0.1] = 0  # Minimum depth limit
-                predictions[predictions > 75.0] = 75.0  # Maximum depth limit
+                predictions[predictions < 0.1] = 0
+                predictions[predictions > 75.0] = 75.0
             
-                # 7. Land mask
+                # 7. Apply land mask
                 land_mask = ~valid_mask
                 predictions[land_mask] = 0
         
@@ -231,8 +300,8 @@ class ClassicModels:
             logger.error(f"Random Forest prediction failed: {str(e)}")
             raise
 
-    def predict(self, sentinel_data: Dict[str, np.ndarray], method: str = 'llm') -> np.ndarray:
-        """Predict water depth"""
+    def predict(self, sentinel_data: Dict[str, np.ndarray], method: str = 'rf') -> np.ndarray:
+        """Predict bathymetry time series across frames."""
         try:
             blue = sentinel_data['blue']   
             green = sentinel_data['green'] 

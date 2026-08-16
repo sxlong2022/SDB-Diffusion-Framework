@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "SDB-Diffusion-Framework: A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates"
+title: "BathySurrogate: An Open-Source Environmental Surrogate Framework for Satellite-Derived Bathymetry via Multi-Source Data Fusion and Spatial Validation"
 message: "If you use this software, please cite it as below."
 type: software
 authors:
@@ -19,7 +19,7 @@ authors:
   - family-names: Bai
     given-names: Yuchuan
     affiliation: Tianjin University
-repository-code: "https://github.com/sxlong2022/SDB-Diffusion-Framework"
+repository-code: "https://github.com/sxlong2022/BathySurrogate"
 license: MIT
 version: 1.0.0
 date-released: 2026-01-01

@@ -1,347 +1,182 @@
-# SDB-Diffusion-Framework
+# BathySurrogate
 
-A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates.
+An Open-Source Environmental Surrogate Framework for Satellite-Derived Bathymetry via Multi-Source Data Fusion and Spatial Validation.
 
 ## Overview
 
-SDB-Diffusion-Framework implements an open-source Python computational surrogate framework integrating classic machine learning with Spatio-Temporal Generative Diffusion Models (S³GM) for satellite-derived bathymetry mapping. It achieves R²=0.941, RMSE=3.09 m, and a range-normalized RMSE of 4.1% over 0–75 m depth range with only 11% ground-truth coverage in complex coastal waters.
+**BathySurrogate** is an open-source, modular Python computational framework designed for high-resolution Satellite-Derived Bathymetry (SDB) mapping in turbid and complex coastal waters. It implements a multi-source data fusion surrogate paradigm—coupling multi-temporal Sentinel-2 optical composites, GEBCO global bathymetric priors, and sparse in-situ nautical chart soundings—evaluated through a leak-proof Spatially Blocked 5-Fold Cross-Validation protocol.
+
+The framework features a 12-feature Enhanced Random Forest surrogate engine as its primary operational predictor, alongside an inverse score-based generative diffusion model (S³GM) with guided Diffusion Posterior Sampling (DPS) for conditional spatio-temporal reconstruction and uncertainty analysis.
 
 ## Highlights
 
-- Modular Python framework fuses Random Forest with diffusion models for SDB
-- Configuration-driven pipeline enables reproducible bathymetric mapping
-- Achieves R²=0.941, RMSE=3.09m with 11% sounding coverage in turbid waters
-- Consumer GPU (6GB VRAM) processes annual datasets in ~12 minutes
-- Implements FAIR principles: YAML configs, pseudocode, public GitHub repo
+- **Modular Software Design**: Implements Strategy, Factory, and Pipeline architectural design patterns with externalized YAML configuration management.
+- **Leak-Proof Spatial Validation**: Enforces Spatially Blocked 5-Fold Cross-Validation ($4 \times 4$ spatial grid) ensuring zero spatial autocorrelation leakage between training and evaluation splits.
+- **Enhanced Surrogate Modeling**: Integrates 12 domain-specific features (spectral bands, band ratios, log transforms, spatial coordinates, GEBCO bathymetric priors, and nearest-neighbor sounding distances/depths) achieving pooled Out-of-Fold (OOF) $R^2 = 0.483$, Pearson $r = 0.706$, $\text{RMSE} = 9.19\text{ m}$, $\text{MAE} = 6.61\text{ m}$, and a range-normalized $\text{nRMSE}_{\text{range}} = 12.61\%$.
+- **High-Performance Computation**: Low computational complexity ($O(S \times N \times C^2)$), processing annual decadal mapping workflows in seconds on standard CPUs and minutes on consumer GPUs (NVIDIA RTX 2060, 6GB VRAM).
+- **FAIR4RS Compliance**: Adheres strictly to Findable, Accessible, Interoperable, and Reusable software standards with comprehensive test suites, metadata (`CITATION.cff`), and pinned environment definitions (`environment.yml`).
 
 ## System Requirements
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with CUDA support and ≥6GB VRAM (tested and benchmarked on NVIDIA GeForce RTX 2060, 6GB VRAM)
+- **GPU**: NVIDIA GPU with CUDA support and ≥6GB VRAM (tested on NVIDIA GeForce RTX 2060 / RTX 4060 Laptop GPU)
 - **RAM**: ≥16GB system memory
-- **Storage**: ≥50GB for datasets and intermediate results
+- **Storage**: ≥50GB for raw imagery, intermediate arrays, and cartographic products
 
 ### Software Requirements
-- **Operating System**: Linux, Windows, or macOS
-- **Python**: 3.9
+- **Operating System**: Linux (Ubuntu 20.04+), Windows (10/11), or macOS
+- **Python**: 3.9+
 - **CUDA**: ≥11.8 (tested on CUDA 12.4)
-- **Conda**: Recommended for environment management
+- **Conda**: Recommended for reproducible environment management
 
 ## Installation
 
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/sxlong2022/SDB-Diffusion-Framework.git
-cd SDB-Diffusion-Framework
+git clone https://github.com/sxlong2022/BathySurrogate.git
+cd BathySurrogate
 ```
 
 ### Step 2: Create Conda Environment
 
 ```bash
 conda env create -f environment.yml
-conda activate sdb-diffusion
+conda activate bathysurrogate
 ```
 
-The `environment.yml` file includes all required dependencies:
-- PyTorch ≥2.0.1
+The `environment.yml` includes all required dependencies:
+- PyTorch ≥2.0.1 (with CUDA acceleration)
 - scikit-learn ≥1.6
 - NumPy, SciPy
-- Google Earth Engine API
-- Other supporting libraries
+- Google Earth Engine Python API (`earthengine-api`)
+- netCDF4, Matplotlib, PyYAML, Pillow, Joblib, tqdm
 
 ### Step 3: Verify Installation
 
-Run the quick test to verify your installation:
+Run the automated test suite:
 
 ```bash
 python tests/quick_test.py
 ```
 
-If successful, you should see output confirming that all modules load correctly and basic functionality works.
+All verification checks should report `[PASS]`.
 
 ## Project Structure
 
 ```
-├── run_bathymetry.py              # Main entry point for the pipeline
-├── data_acquisition_preprocessing.py  # Data acquisition (Sentinel-2, GEBCO)
-├── miwc.py                        # Multi-temporal Image Weighted Composition
-├── environment.yml                # Conda environment specification
+├── run_bathymetry.py                  # Main CLI entry point for all execution stages
+├── data_acquisition_preprocessing.py      # Sentinel-2 & GEBCO data acquisition (GEE)
+├── miwc.py                            # Multi-temporal Image Weighted Composition (MIWC)
+├── environment.yml                    # Conda environment definition
+├── CITATION.cff                       # Citation metadata format
+├── LICENSE                            # MIT License
 ├── tests/
-│   └── quick_test.py              # Quick verification test
-├── bathymetry/                    # Core bathymetry modules
-│   ├── __init__.py
-│   ├── main.py                    # Hybrid system main class
-│   ├── classic_models.py          # Random Forest model
-│   ├── preprocessor.py            # Data preprocessing utilities
-│   ├── s3gm_wrapper.py            # S³GM wrapper
-│   ├── s3gm_config.py             # S³GM configuration
-│   ├── gpu_memory.py              # GPU memory management
-│   └── utils.py                   # Utility functions
-├── configs/                       # Configuration files
-│   ├── classic_models.yaml        # RF hyperparameters
-│   └── s3gm_default.yaml          # S³GM hyperparameters
-└── S3GM/Code/                     # S³GM model (adapted from Li et al., 2024)
-    ├── models/                    # U-Net video architecture
-    ├── sampler/                   # VP-SDE sampling
-    └── trainer/                   # Training utilities
+│   └── quick_test.py                  # Automated test suite and configuration validator
+├── bathysurrogate/                    # Core BathySurrogate Python package
+│   ├── __init__.py                    # Package initialization and public API
+│   ├── main.py                        # Hybrid system orchestrator (HybridBathymetrySystem)
+│   ├── classic_models.py              # Classic & 12-feature Enhanced Random Forest surrogate
+│   ├── preprocessor.py                # Min-Max normalization & spatial blocking partitions
+│   ├── s3gm_wrapper.py                # S³GM generative diffusion model wrapper
+│   ├── s3gm_config.py                 # S³GM hyperparameter dataclass
+│   ├── gpu_memory.py                  # GPU VRAM garbage collection and monitoring
+│   └── utils.py                       # Spatio-temporal array utilities and validation
+├── configs/                           # Externalized YAML configuration files
+│   ├── classic_models.yaml            # Random Forest hyperparameters & feature configs
+│   └── s3gm_default.yaml              # Diffusion SDE, VPSDE, and DPS sampling parameters
+└── S3GM/Code/                         # S³GM neural core (adapted from Li et al., 2024)
+    ├── models/                        # U-Net video architecture with RPE
+    ├── sampler/                       # VP-SDE predictor-corrector with DPS guidance
+    └── trainer/                       # Score matching loss and dataset loaders
 ```
 
 ## Quick Start
 
-### Running the Quick Test
-
-To verify your installation and understand basic usage:
+### 1. Running the Test Suite
 
 ```bash
 python tests/quick_test.py
 ```
 
-This test will:
-1. Verify all required modules can be imported
-2. Check GPU availability (optional but recommended)
-3. Test basic Random Forest functionality with synthetic data
-4. Validate configuration file loading
-5. Confirm S³GM wrapper initialization
+This verifies:
+1. Core dependency imports (NumPy, PyYAML, PyTorch, scikit-learn, `bathysurrogate`)
+2. CUDA GPU availability and memory detection
+3. Synthetic Random Forest surrogate training and inference
+4. YAML configuration loading and parameter validation
+5. S³GM model wrapper configuration initialization
 
-**Expected output**: All tests should pass with "✓" marks. If GPU is not available, a warning will be shown but the test will continue.
+### 2. Multi-Stage Pipeline Execution
 
-### Full Pipeline Execution
-
-The framework operates in six stages:
-#### Stage 1: Data Preprocessing
-
-Acquires and preprocesses Sentinel-2 imagery using MIWC method:
+The framework operates via modular CLI stages:
 
 ```bash
+# Stage 1: Data Acquisition & Preprocessing (Sentinel-2 MIWC + GEBCO downsampling)
 python run_bathymetry.py --stage 1
-```
 
-**Before running**: Update the Google Earth Engine project ID placeholder in `run_bathymetry.py`, `data_acquisition_preprocessing.py`, and `bathymetry/preprocessor.py`:
-
-```python
-ee.Initialize(project='YOUR_GEE_PROJECT_ID')
-```
-
-**Inputs**: 
-- Sentinel-2 imagery (via Google Earth Engine)
-- GEBCO bathymetry grids
-- Nautical chart data (XYZ format)
-
-**Outputs**: 
-- Preprocessed Sentinel-2 composites
-- Aligned GEBCO grids
-- Chart data mapped to computational grid
-
-#### Stage 1.5: Random Forest Training
-
-Trains the RF model on preprocessed optical data:
-
-```bash
+# Stage 1.5: Surrogate Model Training (Full & 5-Fold Spatially Blocked CV)
 python run_bathymetry.py --stage 1.5
-```
 
-**Inputs**: Preprocessed Sentinel-2 features, nautical chart ground truth
-
-**Outputs**: 
-- Trained RF model (`rf_model.pkl`)
-- Initial bathymetry estimates (`rf_bathymetry_*.npy`)
-
-#### Stage 2: S³GM Processing
-
-Refines bathymetry using the diffusion model:
-
-```bash
-python run_bathymetry.py --stage 2
-```
-
-**Inputs**: RF bathymetry, GEBCO data, sparse chart measurements
-
-**Outputs**: 
-- Pre-trained S³GM model (one-time, ~8 hours)
-- Refined bathymetry time series (`s3gm_bathymetry_*.npy`)
-
-**Note**: Pre-training is a one-time cost. Subsequent runs only require conditional sampling (~12 min/year).
-
-#### Stage 3: Post-processing and Visualization
-
-Denormalizes results and generates visualizations:
-
-```bash
-python run_bathymetry.py --stage 3
-```
-
-**Outputs**: 
-- Final bathymetry maps (GeoTIFF format)
-- Validation metrics (R², RMSE, MAE)
-- Visualization plots
-
-#### Stage 1.8: Classic RF Model Validation
-
-Validates the trained RF model against held-out nautical chart measurements:
-
-```bash
+# Stage 1.8: Surrogate Model Out-of-Fold (OOF) Spatial Validation
 python run_bathymetry.py --stage 1.8
-```
 
-**Outputs**:
-- Validation metrics (R², RMSE, MAE) for the RF model
-- Scatter plots comparing RF predictions vs. ground truth
+# Stage 2: S³GM Spatio-Temporal Generative Diffusion Sampling
+python run_bathymetry.py --stage 2
 
-#### Stage 4: Statistical Significance Analysis
+# Stage 3: Post-processing, Denormalization, and Spatial Visualization
+python run_bathymetry.py --stage 3
 
-Performs Wilcoxon signed-rank tests to evaluate statistical significance of model improvements:
-
-```bash
+# Stage 4: Statistical Significance Analysis (Wilcoxon Signed-Rank Test)
 python run_bathymetry.py --stage 4
-```
 
-**Outputs**:
-- p-values and significance results for pairwise model comparisons
-- Statistical summary tables
-
-#### Stage 5: Zoning Performance Analysis
-
-Conducts detailed spatial analysis of model performance across depth zones and geographic regions:
-
-```bash
+# Stage 5: Detailed Performance Stratification Across Depth & Slope Zones
 python run_bathymetry.py --stage 5
 ```
 
-**Outputs**:
-- Per-zone performance metrics (R², RMSE, MAE)
-- Spatial performance maps and zone-specific visualizations
-
-### Running All Stages
-
-To execute the complete pipeline:
-
-```bash
-python run_bathymetry.py --stage all
-```
+> **Note on Google Earth Engine**: Before running Stage 1, ensure you authenticate and initialize your GEE account:
+> ```python
+> ee.Authenticate()
+> ee.Initialize(project='YOUR_GEE_PROJECT_ID')
+> ```
 
 ## Configuration
 
-The framework uses YAML configuration files for reproducibility:
+All model hyperparameters and feature engineering settings are externalized into human-readable YAML files:
 
 ### Random Forest Configuration (`configs/classic_models.yaml`)
 
 ```yaml
 rf_params:
   model_params:
-    n_estimators: 500        # Number of trees
-    max_depth: 25           # Maximum depth
-    max_features: 'sqrt'    # Feature selection method
-    random_state: 42        # Random seed
-    n_jobs: -1             # Parallel processing
-
-  feature_engineering:
-    normalization:
-      use_standard_scaling: true
-    band_ratio:
-      use_log_transform: true
+    n_estimators: 500
+    max_depth: 25
+    max_features: 'sqrt'
+    random_state: 42
+    n_jobs: -1
+    oob_score: true
 ```
 
-### S³GM Configuration (`configs/s3gm_default.yaml`)
-
-Key hyperparameters:
+### S³GM Diffusion Configuration (`configs/s3gm_default.yaml`)
 
 ```yaml
-# SDE parameters
+sde_type: 'vpsde'
 beta_min: 0.1
-beta_max: 1000  # Critical for stability
+beta_max: 1000  # VPSDE scaling parameter
 
-# Sampling parameters (data fidelity and spatial smoothness)
 sampling:
-  alpha: 0.1       # Data fidelity weight (gentle guidance)
-  gamma_spatial: 5.0e-7  # Spatial smoothness weight
-  num_steps: 3
-  snr: 0.01
+  alpha: 0.1             # DPS data fidelity guidance weight
+  gamma_spatial: 0.1     # Spatial smoothness regularization weight
+  inner_loop: 1          # Langevin corrector steps
+  snr: 0.01              # Signal-to-noise ratio
 ```
-
-**Important**: The subtle conditioning weight (α=0.1) is essential for stable convergence. Higher values may cause gradient explosions.
-
-## Data Requirements
-
-### Required Datasets
-
-1. **Sentinel-2 Imagery**
-   - Source: Google Earth Engine (`COPERNICUS/S2_HARMONIZED`)
-   - Access: Free, requires GEE account
-   - Coverage: 2018-2023 (or your study period)
-
-2. **GEBCO Bathymetry**
-   - Source: https://www.gebco.net/
-   - Format: NetCDF
-   - Resolution: 15 arc-second
-
-3. **Nautical Chart Data**
-   - Format: XYZ (longitude, latitude, depth)
-   - Datum: LAT (Lowest Astronomical Tide)
-   - Source: Local maritime authority
-
-4. **JRC Global Surface Water** (optional, for visualization)
-   - Source: Google Earth Engine (`JRC/GSW1_4/GlobalSurfaceWater`)
-   - Purpose: Land/water mask overlay
-
-### Data Preparation
-
-Place your data in the following structure:
-
-```
-data/
-├── sentinel2/          # GEE will download here
-├── gebco/
-│   ├── GEBCO_2019.nc
-│   ├── GEBCO_2020.nc
-│   └── ...
-└── nautical_charts/
-    └── chart_data.xyz
-```
-
-## Computational Performance
-
-Benchmarks on NVIDIA RTX 2060 (6GB VRAM):
-
-| Stage | Time | GPU Memory | Notes |
-|-------|------|------------|-------|
-| Data Preprocessing | ~5 min | N/A | CPU-bound |
-| RF Training | ~12 sec | N/A | CPU-bound |
-| RF Prediction (6 years) | ~19 sec | N/A | CPU-bound |
-| S³GM Pre-training | ~8 hours | 4.2 GB | One-time cost |
-| S³GM Sampling | ~12 min/year | 4.2 GB | Per annual dataset |
-| **Total Inference** | **~12.5 min/year** | **4.2 GB** | Excluding pre-training |
-
-## Troubleshooting
-
-### Common Issues
-
-**1. CUDA Out of Memory**
-- Reduce batch size in `configs/s3gm_default.yaml`
-- Use smaller grid resolution (e.g., 32×32 instead of 64×64)
-- Enable gradient checkpointing
-
-**2. GEE Authentication Error**
-```bash
-earthengine authenticate
-```
-
-**3. Import Errors**
-- Verify conda environment is activated: `conda activate sdb-diffusion`
-- Reinstall dependencies: `conda env update -f environment.yml`
-
-**4. Sampling Instability**
-- Ensure α=0.1 (gentle guidance is critical)
-- Verify β_max=1000 in configuration
-- Check input data normalization range [-1, 1]
 
 ## Citation
 
-If you use this code in your research, please cite:
+If you use BathySurrogate in your research, please cite:
 
 ```bibtex
-@article{song2026sdb,
-  title={SDB-Diffusion-Framework: A Modular Computational Framework for Satellite-Derived Bathymetry via Spatio-Temporal Generative Diffusion Surrogates},
+@article{song2026bathysurrogate,
+  title={BathySurrogate: An Open-Source Environmental Surrogate Framework for Satellite-Derived Bathymetry via Multi-Source Data Fusion and Spatial Validation},
   author={Song, Xiaolong and Liu, Boliang and Xiao, Zhong and Xu, Haijue and Bai, Yuchuan},
   journal={Environmental Modelling \& Software},
   year={2026},
@@ -349,56 +184,11 @@ If you use this code in your research, please cite:
 }
 ```
 
-## Acknowledgements
-
-This implementation builds upon the S³GM framework by Li et al. (2024):
-
-```bibtex
-@article{li2024learning,
-  title={Learning spatiotemporal dynamics with a pretrained generative model},
-  author={Li, Zeyu and Han, Weiwei and Zhang, Yicheng and Lin, Tao},
-  journal={Nature Machine Intelligence},
-  volume={6},
-  number={12},
-  pages={1566--1579},
-  year={2024}
-}
-```
-
-Original S³GM repository: https://github.com/lzy12301/S3GM
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Contact
+## Contact & Issues
 
-For questions or issues:
-- **GitHub Issues**: https://github.com/sxlong2022/SDB-Diffusion-Framework/issues
-- **Email**: xlsong@tju.edu.cn
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request with clear description
-
-## Version History
-
-- **v1.0.0** (2026): Initial open-source release
-  - Modular two-stage pipeline combining Random Forest regression with Spatio-Temporal Generative Diffusion Models (S³GM)
-  - Multi-temporal Image Weighted Composition (MIWC) optical composite preprocessing
-  - Guided Diffusion Posterior Sampling (DPS) with data fidelity ($\alpha=0.1$) and spatial regularization ($\gamma_{spatial}=5\times 10^{-7}$)
-  - Modular software architecture with Strategy, Factory, and Pipeline design patterns
-  - Human-readable externalized YAML configuration management (`configs/s3gm_default.yaml`, `configs/classic_models.yaml`)
-  - Automated cross-platform test suite (`tests/quick_test.py`)
-  - Full FAIR4RS compliance with pinned `environment.yml`, `CITATION.cff`, and MIT License
-
-## References
-
-See the paper for complete references. Key dependencies:
-- PyTorch: https://pytorch.org/
-- scikit-learn: https://scikit-learn.org/
-- Google Earth Engine: https://earthengine.google.com/
-- GEBCO: https://www.gebco.net/
+- **GitHub Issues**: https://github.com/sxlong2022/BathySurrogate/issues
+- **Maintainer**: Xiaolong Song (xlsong@tju.edu.cn), Tianjin University

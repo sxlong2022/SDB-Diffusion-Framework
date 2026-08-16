@@ -1,4 +1,4 @@
-name: sdb-diffusion
+name: bathysurrogate
 channels:
   - pytorch
   - nvidia
@@ -35,5 +35,4 @@ dependencies:
   - pip
   - pip:
     - earthengine-api>=1.4
-    - opencv-python>=4.8
     - einops>=0.8

@@ -1,12 +1,14 @@
-# Basic model parameters
-num_components: 5  # 1(classic) + 1(GEBCO) + 2(chart) + 1(mask)
+# S3GM Diffusion Model Hyperparameter Configuration
+
+# Basic Model Parameters
+num_components: 5  # 1(Surrogate) + 1(GEBCO) + 2(Soundings depth+mask) + 1(Domain mask)
 image_size: 64
-num_frames: 6     # 2018-2023
+num_frames: 6     # 2018-2023 annual series
 version: "bathymetry_v0"
 data: "bathymetry"
 parameterization: "v"
 
-# Model architecture parameters
+# Architecture Parameters
 model_channels: 128
 num_res_blocks: 4
 attention_resolutions: [4, 8, 16]
@@ -17,44 +19,44 @@ num_heads: 8
 use_checkpoint: true
 use_scale_shift_norm: true
 
-# Channel modal configuration
-channel_modal: [1, 1, 2, 1]  # [classic model, GEBCO, chart(depth+mask), unified mask]
+# Channel Modal Configuration
+channel_modal: [1, 1, 2, 1]  # [Surrogate, GEBCO, Soundings(depth+mask), Unified domain mask]
 num_modals: 1
 
-# SDE configuration
-sde_type: 'vpsde'  # Specify using VPSDE
+# SDE Configuration
+sde_type: 'vpsde'
 beta_min: 0.1
 beta_max: 1000
 num_scales: 1000
 
-# Diffusion model parameters
+# Diffusion Model Parameters
 ema_rate: 0.999
 predictor: reverse_diffusion
 corrector: langevin
 probability_flow: true
 
-# Sampling parameters
+# Sampling Parameters
 sampling:
-  alpha: 0.1
-  gamma1: 0 
-  gamma2: 0
-  gamma_spatial: 5.0e-7
-  inner_loop: 1
-  snr: 0.01
+  alpha: 0.1             # DPS data fidelity guidance weight
+  gamma1: 0              # Temporal consistency loss weight
+  gamma2: 0              # Parameter consistency loss weight
+  gamma_spatial: 0.1     # Spatial smoothness regularization weight
+  inner_loop: 1          # Corrector Langevin steps per predictor iteration
+  snr: 0.01              # Signal-to-noise ratio for Langevin step size
   continuous: true
-  num_steps: 3 
+  num_steps: 2 
   overlap: 2
 
-# RPE related parameters
+# Relative Position Encoding (RPE) Parameters
 beta: 32
 use_rpe_net: true
 time_embed_dim: 256
 
-# Temporal processing parameters
+# Spatio-temporal Decay Parameters
 time_decay: 0.12
 spatial_decay: 0.05
 
-# Performance optimization parameters
+# Performance Optimization
 use_fp16: true
 use_amp: true
 memory_efficient: true
@@ -63,30 +65,30 @@ use_reentrant: false
 batch_size_override: 1
 requires_grad: true
 
-# EMA related parameters
+# EMA Parameters
 use_ema: true
 ema_decay: 0.9999
 
-# VESDE parameters
+# VESDE Parameters (Alternative)
 sigma_min: 0.002
 sigma_max: 10
 
-# Numerical stability parameters
+# Numerical Stability
 eps: 1.0e-12
 
-# Sampling parameters
+# Training Sample Splits
 num_samples: 1
 num_samples_train: 1000
 num_samples_val: 1000
 train_split: 0.9
 
-# Data processing parameters
+# Domain Mask Values
 land_value: 1.5
 
-# Physics constraint parameters
+# Physical Guidance
 physics_guide: false
 
-# Stability parameters
+# Gradient & Score Stability
 stability:
   grad_clip: 100.0
   check_grad_interval: 5
@@ -96,21 +98,21 @@ stability:
   score_clamp_range: 20.0
   gradient_clip_dps: 10.0
 
-# Clipping parameters
+# Dynamic Clipping
 clipping:
   use_dynamic: true
   percentile_range: [1, 99]
   expansion_factor: 1.2
   land_threshold: 0.1
 
-# Weight parameters
+# Spatial & Temporal Decay Weights
 weights:
   spatial_min: 0.3
   spatial_max: 1.0
   temporal_min: 0.2
   temporal_max: 1.0
 
-# Range adaptation configuration
+# Range Adaptation Configuration
 range_adaptation:
   enabled: true
   use_mixed_activation: true
@@ -119,7 +121,7 @@ range_adaptation:
   init_shift: 0.0
   attention_scale_factor: 0.8
 
-# Input channel weights
+# Input Channel Prior Weights
 input_weights:
   classic: 0.7
   gebco: 0.3

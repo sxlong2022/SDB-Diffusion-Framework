@@ -287,7 +287,7 @@ class LangevinCorrector(Corrector):
       snr_ratio_sq_val = snr_ratio_sq.mean().item()
 
       step_size_clamp_max = 0.1 # Tunable parameter
-      # step_size = torch.clamp(step_size, min=1e-8, max=step_size_clamp_max) # <-- Comment out this line
+        # Diffusion sampling computation
       step_size_clamped_val = step_size.mean().item()
 
       # --- Conditional Logging ---
@@ -558,22 +558,22 @@ def pc_sampler_video_ar(config, net, sde, predictor, corrector, shape, snr, x0=N
                 # loss_dps = loss_dps/loss_dps.detach().sqrt()    # normalize
 
                 if b == 1:
-                    # When b=1, use temporal continuity loss within timesteps
-                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]  # Current frame
-                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]     # Next frame
-                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)  # Calculate difference between adjacent frames
+        # Diffusion sampling computation
+                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]
+                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)
                 else:
-                    # Original calculation method
+        # Diffusion sampling computation
                     loss_consis = torch.sum(((x0_hat[:, :-1, (nf-ol):nf, :ncomp].detach()-x0_hat[:, 1:, :ol, :ncomp])**2).reshape(x0_hat.shape[0], x0_hat.shape[1]-1, -1), dim=-1)
                 
-                loss_consis = torch.sum(loss_consis)  # Sum over all batches
+                loss_consis = torch.sum(loss_consis)
                 
-                # loss_consis_para calculation also needs modification
+        # Diffusion sampling computation
                 if b == 1:
-                    # Continuity loss for parameter part
+        # Diffusion sampling computation
                     loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - x0_hat[:, 0, :1, ncomp:].detach())**2)
                 else:
-                    # Original calculation method
+        # Diffusion sampling computation
                     loss_consis_para = torch.sum(((x0_hat[:, 1:, :, ncomp:]-x0_hat[:, 0:1, :, ncomp:].detach())**2).reshape(x0_hat.shape[0], -1), dim=-1)
                 
                 loss_consis_para = torch.sum(loss_consis_para, dim=0)
@@ -609,9 +609,9 @@ def pc_sampler_video_ar(config, net, sde, predictor, corrector, shape, snr, x0=N
                 x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
             tqdm_setting.update(1)
 
-            # Add monitoring after key calculations
+        # Diffusion sampling computation
             if i % 25 == 0:
-                monitor_data_range(x, f"Step {i}")
+                monitor_data_range(x, f"step {i}")
 
     return x_to_sample(x_mean).detach().cpu().numpy(), x0_hats if save_sample_path else None, losses
 
@@ -683,22 +683,22 @@ def pc_sampler_video1d_ar(config, net, sde, predictor, corrector, shape, snr, x0
                 # loss_dps = loss_dps/loss_dps.detach().sqrt()    # normalize
 
                 if b == 1:
-                    # When b=1, use temporal continuity loss within timesteps
-                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]  # Current frame
-                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]     # Next frame
-                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)  # Calculate difference between adjacent frames
+        # Diffusion sampling computation
+                    x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]
+                    x0_next = x0_hat[:, 0, 1:nf, :ncomp]
+                    loss_consis = torch.sum((x0_curr.detach() - x0_next)**2)
                 else:
-                    # Original calculation method
+        # Diffusion sampling computation
                     loss_consis = torch.sum(((x0_hat[:, :-1, (nf-ol):nf, :ncomp].detach()-x0_hat[:, 1:, :ol, :ncomp])**2).reshape(x0_hat.shape[0], x0_hat.shape[1]-1, -1), dim=-1)
                 
-                loss_consis = torch.sum(loss_consis)  # Sum over all batches
+                loss_consis = torch.sum(loss_consis)
                 
-                # loss_consis_para calculation also needs modification
+        # Diffusion sampling computation
                 if b == 1:
-                    # Continuity loss for parameter part
+        # Diffusion sampling computation
                     loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - x0_hat[:, 0, :1, ncomp:].detach())**2)
                 else:
-                    # Original calculation method
+        # Diffusion sampling computation
                     loss_consis_para = torch.sum(((x0_hat[:, 1:, :, ncomp:]-x0_hat[:, 0:1, :, ncomp:].detach())**2).reshape(x0_hat.shape[0], -1), dim=-1)
                 
                 loss_consis_para = torch.sum(loss_consis_para, dim=0)
@@ -734,19 +734,19 @@ def pc_sampler_video1d_ar(config, net, sde, predictor, corrector, shape, snr, x0
                 x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
             tqdm_setting.update(1)
 
-            # Add monitoring after key calculations
+        # Diffusion sampling computation
             if i % 25 == 0:
-                monitor_data_range(x, f"Step {i}")
+                monitor_data_range(x, f"step {i}")
 
     return x_to_sample(x_mean).detach().cpu().numpy(), x0_hats if save_sample_path else None, losses
 
 
 def complete_video_pc_dps(config, net, sde, y, transform, corrector,
                          n_steps=5,
-                         alpha=3.,     # Balance DPS weight (this fixed value will be ignored)
+                         alpha=3.,
                          beta=1.,
-                         gamma1=15.,   # Further reduce temporal consistency (this fixed value will be ignored)
-                         gamma2=15,    # Further reduce parameter consistency (this fixed value will be ignored)
+                         gamma1=15.,
+                         gamma2=15,
                          snr=0.128,
                          std_y=None,
                          gamma=1.e-2,
@@ -758,14 +758,40 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
                          continuous=True,
                          data_scalar=None):
     dtype_torch = getattr(torch, dtype)
-    corrector_update_fn = functools.partial(shared_corrector_update_fn,
-                                            sde=sde,
-                                            corrector=corrector,
-                                            continuous=continuous,
-                                            snr=snr,
-                                            n_steps=n_steps,
-                                            channel_modal=config.channel_modal)
-    net_fn = lambda a, b: predict_fn(net, sde, a, b, continuous)
+    # --- v-parameterization → true score conversion ---
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+    is_v_param = getattr(config, 'parameterization', 'epsilon') == 'v'
+    def make_score_net(raw_net_fn):
+        def score_net_fn(a, b):
+            v = raw_net_fn(a, b)
+            _, sigma = sde.marginal_prob(a, b)
+            sigma_exp = sigma[:, None, None, None, None] if len(a.shape) == 5 else sigma[:, None, None, None]
+            sigma_safe = sigma_exp + 1e-8
+            alpha_t = torch.sqrt(torch.clamp(1.0 - sigma_exp**2, min=1e-8))
+            # score = -x/sigma - (alpha/sigma^2)*v
+            score_true = -a / sigma_safe - (alpha_t / (sigma_safe**2)) * v
+        # Diffusion sampling computation
+            score_true = torch.clamp(score_true, min=-20.0, max=20.0)
+            return score_true
+        return score_net_fn
+        # Diffusion sampling computation
+    net_fn_raw = lambda a, b: predict_fn(net, sde, a, b, continuous)
+        # Diffusion sampling computation
+    net_fn = make_score_net(net_fn_raw) if is_v_param else net_fn_raw
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+    def make_no_grad_net(fn):
+        def no_grad_net(a, b):
+            with torch.no_grad():
+                return fn(a, b)
+        return no_grad_net
+    net_fn_no_grad = make_no_grad_net(net_fn)
+        # Diffusion sampling computation
+    if corrector is not None:
+        corrector_obj = corrector(sde, net_fn_no_grad, snr, n_steps, channel_modal=config.channel_modal)
+        corrector_update_fn = lambda x, t, net=None: corrector_obj.update_fn(x, t)
 
     # x_known = torch.from_numpy(x0).to(device).type(dtype_torch)
     y = torch.from_numpy(y).to(device).type(dtype_torch)
@@ -775,9 +801,9 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
     ns = config.num_steps
     ncomp = config.num_components
     ol = config.overlap
-    b = max(1, int(ns // max(1, (nf - ol))) + 1)  # Prevent division by zero
+    b = max(1, int(ns // max(1, (nf - ol))) + 1)
     ns_real = b*(nf-ol)+ol       # exact number of steps generated
-    # Note: the second dimension of shape should be b, not ns_real
+        # Diffusion sampling computation
     shape = [config.num_samples, b, nf, ncomp+config.num_modals-1, config.image_size, config.image_size]       # batch*b*nf*(c+npara)*h*w
     shape_sample = [config.num_samples, ns_real, ncomp+config.num_modals-1, config.image_size, config.image_size]     # batch*ns_real*(c+npara)*h*w
 
@@ -786,57 +812,57 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
             sample = torch.zeros([config.num_samples, ns_real, ncomp+config.num_modals-1, config.image_size, config.image_size], dtype=dtype_torch, device=device)   # batch*ns_real*(c+npara)*h*w
         for i in range(b):
             i_inv = b - i - 1
-            # Ensure index does not exceed bounds
+        # Diffusion sampling computation
             start_dest = i_inv * (nf - ol)
             end_dest = start_dest + nf
-            if start_dest < ns_real: # Check start index
-                # Calculate actual number of frames to copy
+            if start_dest < ns_real:
+        # Diffusion sampling computation
                 num_frames_to_copy = min(nf, ns_real - start_dest)
-                # Check source index
+        # Diffusion sampling computation
                 if i_inv < xx.shape[1]:
-                    # Copy data channels
+        # Diffusion sampling computation
                     sample[:, start_dest : start_dest + num_frames_to_copy, :ncomp] = xx[:, i_inv, :num_frames_to_copy, :ncomp]
                 else:
-                    logger.warning(f"x_to_sample: index {i_inv} exceeds xx second dimension range {xx.shape[1]}")
+                    logger.warning(f"x_to_sample: index {i_inv} exceeds second dimension {xx.shape[1]}")
             else:
                  logger.warning(f"x_to_sample: start index {start_dest} exceeds sample range {ns_real}")
 
-        # Check source index for parameter channels
-        if 0 < xx.shape[1]: # Ensure first batch exists
-             # --- Modify expand size parameters ---
-             # Source tensor xx[:, 0:1, 0:1, ncomp:] shape is [B, 1, 1, C_param, H, W] (6D)
-             # Target shape is [B, ns_real, C_param, H, W]
-             # expand needs 6 dimension parameters
-             # Dim 0 (Batch): -1 (keep unchanged)
-             # Dim 1 (b dim): N/A -> expand to ns_real (but source is 1)
-             # Dim 2 (Time): 1 -> expand to ns_real
-             # Dim 3 (Channel): C_param -> -1 (keep unchanged)
-             # Dim 4 (Height): H -> -1 (keep unchanged)
-             # Dim 5 (Width): W -> -1 (keep unchanged)
-             # Note: expand cannot change element count, it expands by repeating existing dimensions.
-             # We need to get parameter channels from first batch (b=0) and first timestep (t=0) of xx
+        # Diffusion sampling computation
+        if 0 < xx.shape[1]:
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
              param_source = xx[:, 0:1, 0:1, ncomp:] # Shape: [B, 1, 1, C_param, H, W]
-             # Expand time and batch dimensions (if B > 1, though here B=1)
-             # Target sample[:, :, ncomp:] shape is [B, ns_real, C_param, H, W]
-             # expand needs 6 dimensions to match param_source
-             # [B, ns_real, 1, C_param, H, W] ? No, expand cannot insert dimensions
-             # Should squeeze first then expand?
-             # param_source.squeeze(1).squeeze(1) -> [B, C_param, H, W] (4D)
-             # sample[:, :, ncomp:] is 5D
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
 
-             # --- Try direct assignment and broadcasting ---
-             # Get source parameter channels [B, 1, C_param, H, W]
+        # Diffusion sampling computation
+        # Diffusion sampling computation
              param_source_frame0 = xx[:, 0, 0:1, ncomp:]
-             # param_source_frame0 shape should be [B, 1, C_param, H, W]
-             # sample[:, :, ncomp:] shape is [B, ns_real, C_param, H, W]
-             # PyTorch broadcasting should handle this as long as dimensions are compatible
-             sample[:, :, ncomp:] = param_source_frame0 # Auto-broadcast time dimension
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+             sample[:, :, ncomp:] = param_source_frame0
 
-             # --- Original expand code (commented out) ---
-             # sample[:, :, ncomp:] = xx[:, 0:1, 0:1, ncomp:].expand(-1, ns_real, -1, -1, -1) # Expand parameter channels (error)
+        # Diffusion sampling computation
+        # Diffusion sampling computation
              # ------------------------------------
         else:
-            logger.warning(f"x_to_sample: xx second dimension is empty, cannot copy parameter channels")
+            logger.warning("x_to_sample: second dimension of xx is empty, cannot copy parameter channels")
 
         return sample
 
@@ -849,14 +875,14 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
     x_generated = [x_unknown.detach().cpu().numpy()]
     x0_hats = []
 
-    # --- Define maximum guidance weights ---
+        # Diffusion sampling computation
     alpha_max = 1.0
-    gamma1_max = 10.0 # Reduced from 100.0
-    gamma2_max = 10.0 # Reduced from 100.0
-    gamma_spatial_max = 1.0 # --- New spatial smoothing weight ---
+    gamma1_max = 10.0
+    gamma2_max = 10.0
+    gamma_spatial_max = 1.0
     # ---------------------------    
 
-    # --- Add helper function for printing range and std ---
+        # Diffusion sampling computation
     def print_stats(tensor, name):
         if tensor is None or not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
             print(f"  {name}: N/A")
@@ -874,32 +900,32 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
             print(f"  Error printing stats for {name}: {e}")
     # --------------------------------------
 
-    # Add data range monitoring function
+        # Diffusion sampling computation
     def monitor_data_range(tensor, name, step=None):
-        # ... (keep as is) ...
-        pass # Temporarily disabled, use print_stats
+        # Diffusion sampling computation
+        pass
 
-    monitor_data_range(x, "Initial input")
+    monitor_data_range(x, "initial input")
 
     with torch.enable_grad():
-        pbar = tqdm(range(sde.N), desc="Sampling progress")
+        pbar = tqdm(range(sde.N), desc="Sampling Progress")
         for i in pbar:
             t = timesteps[i]
             vec_t = torch.ones(shape[0]*b, device=t.device).float() * t
 
-            # --- Calculate constant guidance weights ---
+        # Diffusion sampling computation
             alpha_eff = config.sampling.get('alpha', 0.85)
             gamma1_eff = config.sampling.get('gamma1', 10.0)
             gamma2_eff = config.sampling.get('gamma2', 10.0)
             gamma_spatial_eff = config.sampling.get('gamma_spatial', 1.0)
-            # --- Log weights (only print at specific steps) ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N - 1:
-                t_val = t.item() # Get scalar value of current time
+                t_val = t.item()
                 logger.info(f" Guidance Weights (t={t_val:.4f}, CONSTANT): alpha_t={alpha_eff:.4e}, gamma1_t={gamma1_eff:.4e}, gamma2_t={gamma2_eff:.4e}, gamma_spatial_t={gamma_spatial_eff:.4e}")
             # -----------------------------------------    
 
-            # --- Debug log: loop start ---
-            if i == 0 or i == 25 or i == sde.N -1 : # Only print details at specific steps
+        # Diffusion sampling computation
+            if i == 0 or i == 25 or i == sde.N -1 :
                 print(f"\n--- Step {i}, t={t.item():.4f} ---")
                 print_stats(x, "x (loop start)")
 
@@ -907,11 +933,11 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
             xb = rearrange(x, 'b n t c h w -> (b n) t c h w')       # (batch*b)*nf*(c+npara)*h*w
 
             '''corrector'''
-            # --- Debug log: before Corrector ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                 print_stats(xb, "xb (Corrector input)")
             temp, temp_mean_corrector = corrector_update_fn(xb, vec_t, net=net)     # (batch*b)*nf*(c+npara)*h*w
-            # --- Debug log: after Corrector ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                 print_stats(temp, "temp (Corrector output)")
                 print_stats(temp_mean_corrector, "temp_mean (Corrector output)")
@@ -923,30 +949,32 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
             inp = temp.clone()                  # (batch*b)*nf*(c+npara)*h*w
             inp.requires_grad_(True)
 
-            # --- Debug log: before Predictor/DPS ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                 print_stats(inp, "inp (Predictor input)")
 
-            score = net_fn(inp, vec_t)          # (batch*b)*nf*(c+npara)*h*w
-            # --- Debug log: Score ---
+            score = net_fn(inp, vec_t)
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                 print_stats(score, "score (model output)")
+        # Diffusion sampling computation
+            v_raw = net_fn_raw(inp, vec_t) if is_v_param else score
 
             with torch.no_grad():
-                # --- Debug log: before SDE coefficient calculation ---
+        # Diffusion sampling computation
                 if i == 0 or i == 25 or i == sde.N -1:
-                    print_stats(temp, "temp (SDE coefficient input)")
+                    print_stats(temp, "temp (SDE coeff input)")
                 f, G = sde.discretize(temp, vec_t)
-                # --- Debug log: SDE coefficients ---
+        # Diffusion sampling computation
                 if i == 0 or i == 25 or i == sde.N -1:
                     print_stats(f, "f (SDE drift)")
                     print_stats(G, "G (SDE diffusion)")
-                score_detached = score.detach() # Use detached score for calculation
+                score_detached = score.detach()
                 rev_f = f - G[:, None, None, None, None] ** 2 * score_detached * (0.5 if probability_flow else 1.)
                 rev_G = torch.zeros_like(G) if probability_flow else G
-                temp_mean_predictor = temp - rev_f # Predictor x_mean
-                temp_u = temp_mean_predictor + rev_G[:, None, None, None, None] * zb # Predictor x
-                # --- Debug log: after Predictor calculation ---
+                temp_mean_predictor = temp - rev_f
+                temp_u = temp_mean_predictor + rev_G[:, None, None, None, None] * zb
+        # Diffusion sampling computation
                 if i == 0 or i == 25 or i == sde.N -1:
                     print_stats(rev_f, "rev_f")
                     print_stats(temp_mean_predictor, "temp_mean (Predictor output)")
@@ -954,40 +982,44 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
 
             # dps loss
             _, std = sde.marginal_prob(xb, vec_t)
-            # --- Debug log: SDE std ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                  print_stats(std, "std (SDE marginal)")
             # -------------------------
 
             stability_eps = 1e-8
-            score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range']) # Clamp model output
+            score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range'])
+            v_clamp = torch.clamp(v_raw, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range'])
 
             if isinstance(sde, VPSDE):
-                # --- Fix VPSDE x0_hat calculation ---
-                # Use sde.alphas_cumprod to calculate sqrt_alpha_t
-                # Get alphas_cumprod for corresponding timestep
-                discrete_t_indices = (vec_t * (sde.N - 1)).long().clamp(0, sde.N - 1) # Map continuous time to discrete index
-                alphas_cumprod_t = sde.alphas_cumprod.to(vec_t.device)[discrete_t_indices]
-                sqrt_alpha_t = torch.sqrt(alphas_cumprod_t) + stability_eps
-                sqrt_1m_alpha_t = torch.sqrt(1.0 - alphas_cumprod_t) + stability_eps # This is the noise standard deviation std
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+                #   x0_hat = sqrt_alpha_t * inp - sqrt_1m_alpha_t * v
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+                #   std = sqrt(1 - exp(2*log_mean_coeff)) = sqrt(1 - alpha_cont^2)
+        # Diffusion sampling computation
+                sqrt_alpha_t = torch.sqrt(torch.clamp(1.0 - std**2, min=0.0)) + stability_eps
+                sqrt_1m_alpha_t = std + stability_eps
 
-                # Expand dimensions
+        # Diffusion sampling computation
                 sqrt_alpha_t_exp = sqrt_alpha_t[:, None, None, None, None]
                 sqrt_1m_alpha_t_exp = sqrt_1m_alpha_t[:, None, None, None, None]
 
-                # --- Debug log: VPSDE coefficients ---
+        # Diffusion sampling computation
                 if i == 0 or i == 25 or i == sde.N -1:
                     print_stats(sqrt_alpha_t_exp, "sqrt_alpha_t")
                     print_stats(sqrt_1m_alpha_t_exp, "sqrt_1m_alpha_t (std)")
                 # --------------------------
 
-                # Use clamp to limit score range
-                score_clamp = torch.clamp(score, min=-config.stability['score_clamp_range'], max=config.stability['score_clamp_range'])
 
-                # Calculate x0_hat based on parameterization
+        # Diffusion sampling computation
                 if config.parameterization == 'v':
                     # v-parameterization: x0_hat = alpha_t * x_t - sigma_t * v
-                    x0_hat_calc = sqrt_alpha_t_exp * inp - sqrt_1m_alpha_t_exp * score_clamp # score_clamp holds 'v'
+                    x0_hat_calc = sqrt_alpha_t_exp * inp - sqrt_1m_alpha_t_exp * v_clamp
                     if i == 0: logger.info("Using v-parameterization formula for x0_hat in DPS") # Log once
                 else: # Assume epsilon parameterization
                     # epsilon-parameterization: x0_hat = (x_t - sigma_t * epsilon) / alpha_t
@@ -1003,61 +1035,71 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
                     print_stats(denominator, "Denominator (sqrt_alpha_t)")
                 # <<< END Step 2 Debugging Code >>>
 
-                # Calculate x0_hat (apply clipping)
+        # Diffusion sampling computation
                 x0_hat = rearrange(x0_hat_calc, '(b n) t c h w -> b n t c h w', n=b)
 
-                # --- Disable clipping --- (keep commented out)
+        # Diffusion sampling computation
                 # if config.stability.get('x0_hat_clamp', True):
                 #      x0_hat_calc = torch.clamp(x0_hat_calc, -20.0, 20.0)
                 # ---------------
 
-            else: # VESDE or other (keep original logic since we mainly use VPSDE)
-                 # ... (original VESDE x0_hat calculation logic unchanged) ...
-                 # Note: if using VESDE + v-param later, this also needs modification
+            else:
+        # Diffusion sampling computation
+        # Diffusion sampling computation
                  std_exp = std[:, None, None, None, None] if len(inp.shape) == 5 else std[:, None, None, None]
                  x0_hat_calc = std_exp ** 2 * score_clamp + inp
                  x0_hat = rearrange(x0_hat_calc, '(b n) t c h w -> b n t c h w', n=b)
                  if i == 0: logger.warning("Using original VESDE formula for x0_hat in DPS (v-param not explicitly handled here)") # Log once
 
-            # --- Debug log: x0_hat (after final calculation) ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
-               print_stats(x0_hat, "x0_hat (for DPS)") # New log label
+               print_stats(x0_hat, "x0_hat (DPS input)")
 
             x0_hat_temp = x_to_sample(x0_hat)
             if save_sample_path:
                 x0_hats.append(x0_hat.detach().cpu().numpy())
 
-            # --- Calculate DPS loss ---
+        # Diffusion sampling computation
             var = std_y**2 + gamma * std**2 if std_y is not None else 1.
-            # Expand var dimensions to match
+        # Diffusion sampling computation
             if isinstance(var, float) or (isinstance(var, torch.Tensor) and var.dim() == 0):
-                # var is scalar (float or 0-dim tensor)
-                var_exp = torch.tensor(var, device=device) # Convert to tensor
+        # Diffusion sampling computation
+                var_exp = torch.tensor(var, device=device)
             else:
-                # var is multi-dimensional tensor
+        # Diffusion sampling computation
                 var_exp = var[:, None, None, None, None] if len(y.shape) == 5 else var[:, None, None, None]
-            # Add epsilon to prevent division by zero
+        # Diffusion sampling computation
             var_safe = var_exp + stability_eps
-            # Calculate loss term (L2)
-            # loss_dps_term = (y - transform(x0_hat_temp)) ** 2 / var_safe
-            # --- Changed to L1 loss ---
-            loss_dps_term = torch.abs(y - transform(x0_hat_temp)) / torch.sqrt(var_safe + stability_eps) # Use sqrt(var + eps)
-            # -----------------------
-            # Check for NaN/Inf in loss term
+        # Diffusion sampling computation
+            # Spatially masked DPS loss with Dual-Track guidance:
+            # 1. Channel 0 (RF), Channel 1 (GEBCO), and Channel 4 (Land mask) are guided globally
+            # 2. Channel 2 (depth) is guided by chart depths at observed locations, and by RF proxy at unobserved locations.
+            obs_mask = y[:, :, 3:4]  # Channel 3 is the observation mask
+            diff = torch.abs(y - transform(x0_hat_temp))
+            
+            loss_dps_cond = diff[:, :, 0:2] + diff[:, :, 4:5]
+            
+            diff_depth_chart = diff[:, :, 2:3]
+            diff_depth_rf = torch.abs(y[:, :, 0:1] - transform(x0_hat_temp)[:, :, 2:3])
+            loss_dps_sparse = (diff_depth_chart * obs_mask * 1.0) + (diff_depth_rf * (1.0 - obs_mask) * 0.2)
+            
+            # Sum channels together and apply VPSDE variance scaling
+            loss_dps_term = (loss_dps_cond.sum(dim=2, keepdim=True) + loss_dps_sparse) / torch.sqrt(var_safe + stability_eps)
+        # Diffusion sampling computation
             if torch.isnan(loss_dps_term).any() or torch.isinf(loss_dps_term).any():
-                 print(f"Warning: step {i}, loss_dps_term contains NaN/Inf. Replacing with 0.")
-                 loss_dps_term = torch.nan_to_num(loss_dps_term, nan=0.0) # Inf will also be handled
+                 print(f"Warning: Step {i}, loss_dps_term contains NaN/Inf. Replaced with 0.")
+                 loss_dps_term = torch.nan_to_num(loss_dps_term, nan=0.0)
 
             loss_dps = torch.sum(loss_dps_term.reshape(x0_hat.shape[0], -1), dim=-1)
             loss_dps = torch.sum(loss_dps, dim=0)
             if std_y is not None:
                 loss_dps = loss_dps / 2.
-            # --- Debug log: loss_dps ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                  print(f"  loss_dps: {loss_dps.item():.4e}")
             # --------------------------
 
-            # --- Calculate consistency loss ---
+        # Diffusion sampling computation
             if b == 1:
                 x0_curr = x0_hat[:, 0, :(nf-1), :ncomp].detach()
                 x0_next = x0_hat[:, 0, 1:nf, :ncomp]
@@ -1072,106 +1114,182 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
             loss_consis = torch.sum(loss_consis_term)
             loss_consis_para = torch.sum(loss_consis_para_term)
 
-            # --- Debug log: loss_consis & loss_consis_para ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                  print(f"  loss_consis: {loss_consis.item():.4e}")
                  print(f"  loss_consis_para: {loss_consis_para.item():.4e}")
             # -----------------------------------------------
 
-            # --- Calculate spatial smoothing loss (L1 of first-order difference) ---
-            # Assume depth channel index is defined in config as depth_channel (e.g. = 2)
-            depth_channel_idx = getattr(config, 'depth_channel', 2) # Get depth channel index, default is 2
-            if x0_hat_temp.shape[2] > depth_channel_idx: # Ensure index is valid
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+            depth_channel_idx = getattr(config, 'depth_channel', 2)
+            if x0_hat_temp.shape[2] > depth_channel_idx:
                 depth_channel = x0_hat_temp[:, :, depth_channel_idx:depth_channel_idx+1] # [B, T, 1, H, W]
-                # Calculate horizontal difference
+        # Diffusion sampling computation
                 diff_h = torch.abs(depth_channel[:, :, :, :, :-1] - depth_channel[:, :, :, :, 1:])
-                # Calculate vertical difference
+        # Diffusion sampling computation
                 diff_v = torch.abs(depth_channel[:, :, :, :-1, :] - depth_channel[:, :, :, 1:, :])
-                # Calculate total L1 loss
+        # Diffusion sampling computation
                 loss_spatial = torch.sum(diff_h) + torch.sum(diff_v)
             else:
-                print(f"Warning: step {i}, depth channel index {depth_channel_idx} invalid (x0_hat_temp channels: {x0_hat_temp.shape[2]}). loss_spatial set to 0.")
+                print(f"Warning: Step {i}, depth channel index {depth_channel_idx} invalid (x0_hat_temp channels: {x0_hat_temp.shape[2]}). loss_spatial set to 0.")
                 loss_spatial = torch.tensor(0.0, device=device)
-            # --- Debug log: loss_spatial ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                  print(f"  loss_spatial: {loss_spatial.item():.4e}")
             # ----------------------------
 
-            loss_eq = torch.tensor(0.0, device=device) # Default value
+            loss_eq = torch.tensor(0.0, device=device)
             if config.physics_guide:
-                # loss_eq, scalar2 = voriticity_residual(x0_hat, ns_real, 1., data_scalar) # This part may need adjustment
+        # Diffusion sampling computation
                 # scalar2 = scalar2.detach()
                 # loss = alpha * loss_dps + beta * loss_eq + gamma1 * loss_consis + gamma2 * loss_consis_para
                 # assert (not torch.isnan(loss_eq))
-                pass # Temporarily skip physics guidance loss
+                pass
 
-            # Normalize loss values to prevent overflow
-            # loss_scale = loss_dps.detach().abs().mean() + 1.0  # Use DPS loss as baseline scale # <- commented out
-            # loss_dps_norm = loss_dps / loss_scale # <- commented out
-            # loss_consis_norm = loss_consis / loss_scale  # Use same scale # <- commented out
-            # loss_consis_para_norm = loss_consis_para / loss_scale  # Use same scale # <- commented out
-            # loss_spatial_norm = loss_spatial / loss_scale # --- Normalize spatial loss --- # <- commented out
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
 
-            # Use normalized loss and time-varying weights
-            # loss = (alpha_eff * loss_dps_norm + # <- modified
-            #         gamma1_eff * loss_consis_norm + # <- modified
-            #         gamma2_eff * loss_consis_para_norm + # <- modified
-            #         gamma_spatial_eff * loss_spatial_norm) # <-- Add spatial loss # <- modified
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
 
-            # --- Directly use original loss terms and weights ---
+        # Diffusion sampling computation
             loss = (alpha_eff * loss_dps +
                     gamma1_eff * loss_consis +
                     gamma2_eff * loss_consis_para +
                     gamma_spatial_eff * loss_spatial)
             # --------------------------------
 
-            # --- Debug log: total loss ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                  print(f"  loss_total: {loss.item():.4e}")
             # ----------------------------
 
-            # --- Gradient calculation and application ---
-            dx = torch.autograd.grad(loss, inp, allow_unused=True)[0] # Allow unused gradients
-
-            if dx is None:
-                print(f"Warning: step {i}, dx is None, skipping gradient update.")
-                temp = temp_u # If gradient is None, do not apply gradient update
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+            loss_no_dps = (gamma1_eff * loss_consis +
+                           gamma2_eff * loss_consis_para +
+                           gamma_spatial_eff * loss_spatial)
+            
+            dx_no_dps = torch.autograd.grad(loss_no_dps, inp, allow_unused=True)[0]
+            if dx_no_dps is None:
+                dx_no_dps = torch.zeros_like(inp)
             else:
-                # Check if dx contains NaN/Inf
-                if torch.isnan(dx).any() or torch.isinf(dx).any():
-                    print(f"Warning: step {i}, dx contains NaN/Inf. Replacing with 0.")
-                    dx = torch.nan_to_num(dx, nan=0.0) # Inf will also be handled
+        # Diffusion sampling computation
+                if torch.isnan(dx_no_dps).any() or torch.isinf(dx_no_dps).any():
+                    dx_no_dps = torch.nan_to_num(dx_no_dps, nan=0.0)
+            
+            if is_v_param:
+        # Diffusion sampling computation
+                residual = x0_hat_temp - y  # [B, ns_real, C, H, W]
+                if b == 1:
+                    residual_block = residual[:, :nf]  # [B, nf, C, H, W]
+                else:
+                    residual_block = torch.zeros_like(inp.unsqueeze(0).expand(x0_hat.shape[0], -1, -1, -1, -1, -1)[:, 0])
+                    for bi in range(b):
+                        i_inv = b - bi - 1
+                        start_idx = i_inv * (nf - ol)
+                        residual_block[bi] = residual[:, start_idx:start_idx+nf]
+                    residual_block = residual_block[:inp.shape[0]]
+                
+                target_mask = torch.zeros_like(residual_block)
+        # Diffusion sampling computation
+                target_mask[:, :, 0:2] = 1.0
+                target_mask[:, :, 4:5] = 1.0
+        # Diffusion sampling computation
+                if b == 1:
+                    obs_mask_full = y[:, 0:nf, 3:4]
+                    target_mask[:, :, 2:3] = obs_mask_full * 1.0 + (1.0 - obs_mask_full) * 0.0
+                else:
+                    obs_mask_full2 = torch.zeros_like(residual_block[:, :, 2:3])
+                    for bi in range(b):
+                        i_inv = b - bi - 1
+                        start_idx = i_inv * (nf - ol)
+                        obs_mask_full2[bi] = y[:, start_idx:start_idx+nf, 3:4]
+                    target_mask[:, :, 2:3] = obs_mask_full2 * 1.0 + (1.0 - obs_mask_full2) * 0.0
+                
+        # Diffusion sampling computation
+                sigma_for_grad = std[:, None, None, None, None]
+                grad_scale = (1.0 - sigma_for_grad).clamp(min=0.05)
+                dx_dps_analytic = alpha_eff * residual_block * target_mask * grad_scale
+                
+        # Diffusion sampling computation
+                dx = dx_dps_analytic + dx_no_dps
+            else:
+        # Diffusion sampling computation
+                loss = alpha_eff * loss_dps + loss_no_dps
+                dx = torch.autograd.grad(loss, inp, allow_unused=True)[0]
+                if dx is None:
+                    dx = torch.zeros_like(inp)
+                else:
+                    dx = torch.nan_to_num(dx, nan=0.0)
+            
+        # Diffusion sampling computation
+            if i == 0 or i == 25 or i == sde.N -1:
+                print_stats(dx, "dx (final gradient)")
+            
+        # Diffusion sampling computation
+            dx = torch.clamp(dx, min=-0.1, max=0.1)
+            temp = temp_u - dx
 
-                # --- Debug log: dx ---
-                if i == 0 or i == 25 or i == sde.N -1:
-                    print_stats(dx, "dx (gradient)")
-
-                # Limit gradient magnitude
-                dx = torch.clamp(dx, min=-1e5, max=1e5) # Further limit gradient range
-
-                temp = temp_u - dx     # (batch*b)*(nf*c+npara)*h*w
-
-            # --- Debug log: temp (final) ---
+        # Diffusion sampling computation
             if i == 0 or i == 25 or i == sde.N -1:
                 print_stats(temp, "temp (final update)")
 
-            temp = temp.detach() # detach here
+            temp = temp.detach()
             x = rearrange(temp, '(b n) t c h w -> b n t c h w', n=b)
             x_mean = rearrange(temp_mean_corrector, '(b n) t c h w -> b n t c h w', n=b)
+
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+            if is_v_param:
+                obs_mask_s = y[0, :, 3:4]  # [ns_real, 1, H, W]
+                obs_depth_s = y[0, :, 2:3]  # [ns_real, 1, H, W]
+        # Diffusion sampling computation
+                x_rearranged = x_to_sample(x)  # [B, ns_real, C, H, W]
+        # Diffusion sampling computation
+                x_rearranged[:, :, 2:3] = x_rearranged[:, :, 2:3] * (1.0 - obs_mask_s) + obs_depth_s * obs_mask_s
+        # Diffusion sampling computation
+                if 'x0_hat_temp' in dir() and x0_hat_temp is not None:
+                    x0_hat_temp = x0_hat_temp.clone()
+                    x0_hat_temp[:, :, 2:3] = x0_hat_temp[:, :, 2:3] * (1.0 - obs_mask_s) + obs_depth_s * obs_mask_s
+        # Diffusion sampling computation
+                x = torch.zeros_like(x)
+                for bi in range(b):
+                    i_inv = b - bi - 1
+                    start_idx = i_inv * (nf - ol)
+                    x[:, bi, :nf, :ncomp] = x_rearranged[:, start_idx:start_idx+nf, :ncomp]
 
             if save_sample_path:
                 x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
 
-            # Update tqdm description
-            pbar.set_description(f"Sampling progress (Loss: {loss.item():.2e})")
+        # Diffusion sampling computation
+            pbar.set_description(f"Sampling Progress (Loss: {loss.item():.2e})")
 
-    # --- Add final result monitoring at end of function ---
-    final_result = x_to_sample(x_mean).detach().cpu().numpy()
-    print("\n--- Sampling complete ---")
-    # *** New log: record x_mean range at end of sampling loop ***
-    print_stats(x_mean, "Sampling end x_mean (before conversion)")
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+        # Diffusion sampling computation
+    final_x0_hat = x0_hat_temp.detach().cpu().numpy() if 'x0_hat_temp' in dir() else None
+    if final_x0_hat is not None:
+        final_result = final_x0_hat
+        print("--- Using x0_hat as final output (avoids terminal score explosion) ---")
+    else:
+        final_result = x_to_sample(x_mean).detach().cpu().numpy()
+    print("\n--- Sampling Completed ---")
+        # Diffusion sampling computation
+    print_stats(x_mean, "Sampling ended x_mean (pre-transform)")
     # ******************************************
-    print_stats(torch.from_numpy(final_result), "Final result x_mean (after conversion)")
+    print_stats(torch.from_numpy(final_result), "Final result x_mean (post-transform)")
 
     return final_result, x_generated if save_sample_path else None
 
@@ -1246,17 +1364,17 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                     temp_mean = temp - rev_f
                     temp_u = temp_mean + rev_G[:, None, None, None] * zb
                 
-                # Calculate x0_hat
+        # Diffusion sampling computation
                 _, std = sde.marginal_prob(xb, vec_t)
                 x0_hat = rearrange(std[:, None, None, None, None] ** 2 * score + inp, 
                                   '(b n) t c h w -> b n t c h w', n=b)
                 
-                # Get observation mask (assuming in 4th channel)
+        # Diffusion sampling computation
                 obs_mask = x0_hat[:, :, :, 3:4]  # [B, N, T, 1, H, W]
                 
-                # Convert x0_hat and record range (every 50 steps)
+        # Diffusion sampling computation
                 if i % 50 == 0:
-                    x0_hat_before = x0_hat[:, :, :, 2:3][obs_mask[:, :, :, 0] > 0.5]  # Only look at depth channel
+                    x0_hat_before = x0_hat[:, :, :, 2:3][obs_mask[:, :, :, 0] > 0.5]
                     transformed = transform(x0_hat)
                     x0_hat_after = transformed[:, :, :, 2:3][obs_mask[:, :, :, 0] > 0.5]
                     
@@ -1266,20 +1384,20 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                     logger.info(f"x0_hat range at obs points (after transform): "
                                f"[{x0_hat_after.min().item():.4f}, {x0_hat_after.max().item():.4f}]")
                 
-                # Calculate masked DPS loss
+        # Diffusion sampling computation
                 x0_hat_temp = x_to_sample(x0_hat)
                 obs_mask = y[:, :, 3:4] > 0.5
-                valid_mask = (y != 1.5) & (transform(y) != 1.5)  # Exclude land/invalid regions
+                valid_mask = (y != 1.5) & (transform(y) != 1.5)
                 combined_mask = valid_mask & obs_mask
                 
-                # Calculate loss separately for observed and non-observed points
+        # Diffusion sampling computation
                 loss_dps_obs = ((y - transform(x0_hat_temp))[combined_mask] ** 2).sum()
-                loss_dps_rest = ((y - transform(x0_hat_temp))[valid_mask & ~obs_mask] ** 2).sum() * 0.1  # Reduce weight for non-observed points
+                loss_dps_rest = ((y - transform(x0_hat_temp))[valid_mask & ~obs_mask] ** 2).sum() * 0.1
                 
-                # Combine losses
+        # Diffusion sampling computation
                 loss_dps = loss_dps_obs + loss_dps_rest
                 
-                # Calculate consistency loss (using valid region mask)
+        # Diffusion sampling computation
                 if b == 1:
                     x0_curr = x0_hat[:, 0, :(nf-1), :ncomp]
                     x0_next = x0_hat[:, 0, 1:nf, :ncomp]
@@ -1289,7 +1407,7 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                     x0_next = x0_hat[:, 1:, :ol, :ncomp]
                     loss_consis = torch.sum((x0_curr.detach() - x0_next)**2 * valid_mask[:, :-1, (nf-ol):nf])
                 
-                # Parameter consistency loss
+        # Diffusion sampling computation
                 if b == 1:
                     loss_consis_para = torch.sum((x0_hat[:, 0, 1:, ncomp:] - 
                                                 x0_hat[:, 0, :1, ncomp:].detach())**2)
@@ -1297,18 +1415,18 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                     loss_consis_para = torch.sum((x0_hat[:, 1:, :, ncomp:] - 
                                                 x0_hat[:, 0:1, :, ncomp:].detach())**2)
                 
-                # Total loss
+        # Diffusion sampling computation
                 loss = (alpha * loss_dps + 
                         gamma1 * loss_consis + 
                         gamma2 * loss_consis_para)
                 
-                # Calculate and apply gradient
+        # Diffusion sampling computation
                 dx = torch.autograd.grad(loss, inp)[0]
                 
-                # Use more conservative gradient clipping
+        # Diffusion sampling computation
                 dx = torch.clamp(dx, min=-1.0, max=1.0)
                 
-                # Record gradient info every 50 steps
+        # Diffusion sampling computation
                 if i % 50 == 0:
                     logger.info(f"Gradient stats:")
                     logger.info(f"- dx range: [{dx.min().item():.4e}, {dx.max().item():.4e}]")
@@ -1325,9 +1443,9 @@ def complete_video1d_pc_dps(config, net, sde, y, transform, corrector, n_steps=5
                 x_generated.append(x_to_sample(x_mean).detach().cpu().numpy())
             tqdm_setting.update(1)
 
-            # Add monitoring after key calculations
+        # Diffusion sampling computation
             if i % 25 == 0:
-                monitor_data_range(x, f"Step {i}")
+                monitor_data_range(x, f"step {i}")
 
     return x_to_sample(x_mean).detach().cpu().numpy(), x0_hats if save_sample_path else None, losses
 

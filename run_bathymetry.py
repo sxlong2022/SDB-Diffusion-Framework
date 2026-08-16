@@ -1,34 +1,45 @@
+#!/usr/bin/env python3
+"""
+BathySurrogate: An Open-Source Environmental Surrogate Framework for Satellite-Derived Bathymetry
+Pipeline Execution Script
+
+Usage:
+    python run_bathymetry.py --stage <num>
+
+Stages:
+    1: Data Preprocessing (Sentinel-2 MIWC composite + GEBCO grids)
+    1.5: Random Forest Surrogate Model Training (Full & 5-Fold Spatial CV)
+    1.8: Random Forest Surrogate Model Validation (Out-of-Fold 5-Fold CV)
+    2: S3GM Spatio-Temporal Generative Diffusion Model Conditional Sampling
+    3: Post-processing and Spatial Visualization
+    4: Statistical Significance Analysis (Wilcoxon Signed-Rank Test)
+    5: Zoning & Terrain Performance Analysis
+"""
+
 import sys
+import time
 import os
 import logging
 import argparse
-import numpy as np
-import ee
-ee.Authenticate()
-ee.Initialize(project='YOUR_GEE_PROJECT_ID')
-from datetime import datetime
-from data_acquisition_preprocessing import (
-    get_sentinel2_images,
-    load_gebco_data
-)
-from miwc import apply_miwc
-from bathymetry.main import HybridBathymetrySystem
-from bathymetry.classic_models import ClassicModels
-from bathymetry.preprocessor import DataPreprocessor
-from scipy.interpolate import RegularGridInterpolator
-from scipy.ndimage import zoom
 import math
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple, Union
+
+import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
-from joblib import dump, load
-from typing import List, Dict, Optional, Tuple, Union
-from PIL import Image
 import matplotlib.gridspec
 import matplotlib.ticker as mticker
+from PIL import Image
+from joblib import dump, load
+from scipy.interpolate import RegularGridInterpolator
+from scipy.ndimage import zoom
 from scipy.stats import wilcoxon
 
-# Configure logging
+from bathysurrogate.main import HybridBathymetrySystem
+from bathysurrogate.classic_models import ClassicModels
+from bathysurrogate.preprocessor import DataPreprocessor
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -36,45 +47,54 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_logging():
-    """Configure logging system"""
+    """Configure logging system."""
     if len(logging.getLogger().handlers) > 0:
         return
         
     log_dir = 'logging'
     os.makedirs(log_dir, exist_ok=True)
     
-    # Default to INFO level, change to DEBUG for detailed initialization info
+    # Default level is INFO; use DEBUG for detailed tracing
     logging.basicConfig(
-        level=logging.INFO,  # or logging.DEBUG for detailed info
+        level=logging.INFO,  # or logging.DEBUG for verbose output
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
 def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Bathymetry System Processing')
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='BathySurrogate: Environmental Surrogate Computational Framework')
     parser.add_argument(
         '--stage',
         type=str,
         choices=['1', '1.5', '1.8','2', '3', '4', '5'],
-        help='Processing stage: 1=Data preprocessing, 1.5=Classic model training, 1.8=Classic model validation, 2=S3GM model processing, 3=Post-processing and visualization, 4=Statistical significance analysis, 5=Detailed performance analysis by depth and terrain zones'
+        help='Processing stage: 1=Preprocessing, 1.5=Surrogate Training, 1.8=Surrogate Validation, 2=S3GM Sampling, 3=Post-processing, 4=Statistical Tests, 5=Zoning Analysis'
     )
     return parser.parse_args()
 
-def stage1_preprocessing(aoi, gebco_years, sentinel_years):
-    """Stage 1: Data preprocessing"""
+def stage1_preprocessing(aoi_coords, gebco_years, sentinel_years):
+    """Stage 1: Data Acquisition & Preprocessing."""
     try:
-        # Create time series data storage structure
+        import ee
+        ee.Authenticate()
+        ee.Initialize(project='YOUR_GEE_PROJECT_ID')
+        aoi = ee.Geometry.Rectangle(aoi_coords)
+        from data_acquisition_preprocessing import (
+            get_sentinel2_images,
+            load_gebco_data
+        )
+        from miwc import apply_miwc
+        # Initialize time-series storage structures
         sentinel_time_series = {
             'blue': np.zeros((6, 64, 64)),  # [T, H, W]
             'green': np.zeros((6, 64, 64))
         }
         gebco_time_series = np.zeros((6, 64, 64))  # [T, H, W]
         
-        # Process data for each year
+        # Process each annual observation frame
         for idx, (gebco_year, sentinel_year) in enumerate(zip(gebco_years, sentinel_years)):
-            logger.info(f"Processing GEBCO data released in {gebco_year} (corresponding to {sentinel_year} observations)...")
+            logger.info(f"Processing GEBCO grid {gebco_year} (corresponding to {sentinel_year} observations)...")
             
-            # GEBCO data processing
+            # GEBCO bathymetry grid processing
             gebco_file = os.path.join(
                 'GEBCO_Bathymetry',
                 'GEBCO_26_Dec_2024_86912dfafafa',
@@ -82,17 +102,17 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
             )
             depth_data = load_gebco_data(gebco_file)
             if depth_data.shape != (64, 64):
-                # Create target grid
+                # Create target computational grid
                 target_h, target_w = 64, 64
                 orig_h, orig_w = depth_data.shape
     
-                # Create source and target coordinate grids
+                # Create source and target coordinate meshes
                 y_orig = np.linspace(0, 1, orig_h)
                 x_orig = np.linspace(0, 1, orig_w)
                 y_target = np.linspace(0, 1, target_h)
                 x_target = np.linspace(0, 1, target_w)
     
-                # Use bilinear interpolation for resampling
+                # Bilinear interpolation resampling
                 interpolator = RegularGridInterpolator(
                     (y_orig, x_orig), 
                     depth_data,
@@ -101,19 +121,19 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
                     fill_value=np.nan
                 )
     
-                # Create target coordinate points
+                # Create target coordinate query points
                 xx, yy = np.meshgrid(x_target, y_target)
                 points = np.stack([yy.ravel(), xx.ravel()], axis=1)
     
-                # Perform interpolation
+                # Execute interpolation
                 depth_data = interpolator(points).reshape(target_h, target_w)
     
-                logger.info(f"Resampled GEBCO data to target size: {depth_data.shape}")
+                logger.info(f"Resampled GEBCO grid to target resolution: {depth_data.shape}")
             
             gebco_time_series[idx] = depth_data
-            logger.info(f"GEBCO data range (after resampling): [{depth_data.min():.4f}, {depth_data.max():.4f}]")
+            logger.info(f"GEBCO depth range (post-resampling): [{depth_data.min():.4f}, {depth_data.max():.4f}]")
             
-            # Sentinel-2 data processing
+            # Sentinel-2 optical imagery processing
             date_range = (f'{sentinel_year}-01-01', f'{sentinel_year}-12-31')
             image_collection = get_sentinel2_images(aoi, date_range)
             processed_image = apply_miwc(
@@ -125,23 +145,23 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
             )
             
             def get_band_array(image, band_name, aoi):
-                """Get array data for specified band"""
+                """Extract raster array for specified optical band."""
                 try:
-                    # Get available band names
+                    # Retrieve available spectral bands
                     available_bands = image.bandNames().getInfo()
-                    logger.info(f"Available bands: {available_bands}")
+                    logger.info(f"Available spectral bands: {available_bands}")
                     
-                    # First resample image to target resolution
-                    target_scale = math.sqrt(aoi.area().getInfo() / (64 * 64))  # Calculate target resolution
+                    # Reproject and resample image to target resolution
+                    target_scale = math.sqrt(aoi.area().getInfo() / (64 * 64))  # Compute target ground sampling distance
                     resampled_image = image.resample('bilinear').reproject(
                         crs=image.projection(),
                         scale=target_scale
                     )
                     
-                    # Select band (using list format)
+                    # Select spectral band
                     band_data = resampled_image.select([band_name])
                     
-                    # Get data
+                    # Fetch image region array
                     data = band_data.reduceRegion(
                         reducer=ee.Reducer.toList(),
                         geometry=aoi,
@@ -150,61 +170,61 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
                     ).get(band_name).getInfo()
                     
                     if not data:
-                        logger.error(f"Failed to retrieve {band_name} band data")
+                        logger.error(f"{band_name}band data retrieval failed")
                         return None
                         
-                    # Convert to numpy array and reshape
+                    # Convert to NumPy array and reshape
                     temp_grid = np.array(data)
-                    logger.info(f"Retrieved data size: {temp_grid.size}")
+                    logger.info(f"Retrieved array size: {temp_grid.size}")
                     
-                    # Calculate nearest square grid size
+                    # Compute square grid dimensions
                     grid_size = int(np.sqrt(temp_grid.size))
                     temp_grid = temp_grid[:grid_size*grid_size].reshape(grid_size, grid_size)
                     
-                    # Use scipy.ndimage for precise resampling to 64x64
+                    # Resample to 64x64 grid
                     resampled_grid = zoom(temp_grid, (64/grid_size, 64/grid_size), order=1)
-                    logger.info(f"Resampled image size: {resampled_grid.shape}")
+                    logger.info(f"Resampled grid shape: {resampled_grid.shape}")
                     
                     return resampled_grid
                     
                 except Exception as e:
-                    logger.error(f"Error retrieving {band_name} band data: {str(e)}")
+                    logger.error(f"Failed to extract {band_name} band data: {str(e)}")
                     return None
             
-            # Ensure processed_image is ee.Image type and contains necessary bands
+            # Verify processed composite image validity
             processed_image = ee.Image(processed_image)
             available_bands = processed_image.bandNames().getInfo()
-            logger.info(f"Available bands after MIWC processing: {available_bands}")
+            logger.info(f"Available bands post-MIWC composite: {available_bands}")
 
             if not all(band in available_bands for band in ['blue', 'green']):
-                logger.warning("Missing required bands after MIWC processing")
+                logger.warning("Missing required bands in MIWC composite")
                 continue
 
-            # Get band data using list format
+            # Extract Blue and Green bands
             blue_array = get_band_array(processed_image, 'blue', aoi)
             green_array = get_band_array(processed_image, 'green', aoi)
             
-            # Data validation
+            # Validate extracted arrays
             if blue_array is None or green_array is None:
-                logger.error("Unable to retrieve valid band data")
+                logger.error("Failed to retrieve valid spectral band arrays")
                 continue
                 
             if blue_array.shape != green_array.shape:
-                logger.error(f"Band shapes inconsistent: blue={blue_array.shape}, green={green_array.shape}")
+                logger.error(f"Band shape mismatch: blue={blue_array.shape}, green={green_array.shape}")
                 continue
                 
             if np.all(np.isnan(blue_array)) or np.all(np.isnan(green_array)):
-                logger.error("Band data is all NaN")
+                logger.error("Band data contains only NaNs")
                 continue
             
             sentinel_time_series['blue'][idx] = blue_array
             sentinel_time_series['green'][idx] = green_array
-            logger.info(f"Sentinel-2 blue band range (after resampling): [{blue_array.min():.4f}, {blue_array.max():.4f}]")
-            logger.info(f"Sentinel-2 green band range (after resampling): [{green_array.min():.4f}, {green_array.max():.4f}]")
+            logger.info(f"Sentinel-2 Blue band range (resampled): [{blue_array.min():.4f}, {blue_array.max():.4f}]")
+            logger.info(f"Sentinel-2 Green band range (resampled): [{green_array.min():.4f}, {green_array.max():.4f}]")
             
-            logger.info(f"Completed preprocessing and storage for {sentinel_year} data")
+            logger.info(f"Completed preprocessing for year {sentinel_year}")
             
-        # Save preprocessing results
+        # Save preprocessed arrays
         output_dir = 'intermediate_results'
         os.makedirs(output_dir, exist_ok=True)
         np.save(os.path.join(output_dir, 'sentinel_time_series.npy'), sentinel_time_series)
@@ -217,78 +237,108 @@ def stage1_preprocessing(aoi, gebco_years, sentinel_years):
         raise
 
 def stage1_5_model_training(sentinel_time_series):
-    """Stage 1.5: Train classic models"""
+    """Stage 1.5: Surrogate Model Training (Full & 5-Fold Spatial CV)."""
     try:
-        logger.info("Starting classic model training...")
+        logger.info("Starting surrogate model training...")
         classic_models = ClassicModels()
         
-        # Initialize preprocessor to get nautical chart data
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        # Initialize preprocessor to retrieve sounding ground truth
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
-        nautical_charts = preprocessor.get_sparse_points()
         
-        # Use original positive depths and apply depth range limits
-        depths = np.abs(nautical_charts['depths'])
-        valid_depth_mask = (depths >= 0.1) & (depths <= 75.0)
-        
-        if not np.any(valid_depth_mask):
-            raise ValueError("No data points within valid depth range")
+        # 1. Ensure and load spatially blocked fold partitions
+        folds_path = 'intermediate_results/validation/spatial_folds.npz'
+        if not os.path.exists(folds_path):
+            os.makedirs(os.path.dirname(folds_path), exist_ok=True)
+            logger.info("Spatial folds not found, generating new blocked 5-fold partitions...")
+            preprocessor.generate_spatial_folds(n_splits=5, seed=2026)
             
-        nautical_charts['depths'] = depths[valid_depth_mask]
-        nautical_charts['coordinates'] = nautical_charts['coordinates'][valid_depth_mask]
+        folds_data = np.load(folds_path)
+        all_coords = folds_data['coordinates']
+        all_depths = folds_data['depths']
+        fold_ids = folds_data['fold_ids']
         
-        logger.info(f"Original depth range: {depths.min():.2f} to {depths.max():.2f} m")
-        logger.info(f"Valid depth range: {nautical_charts['depths'].min():.2f} to {nautical_charts['depths'].max():.2f} m")
-        logger.info(f"Number of valid depth points: {np.sum(valid_depth_mask)}")
-        
-        # Use latest year (2023) remote sensing data
-        t = -1  # Last time point
+        # Extract optical features for all sounding locations
+        t = -1  # Latest time frame (2023)
         blue = sentinel_time_series['blue'][t]
         green = sentinel_time_series['green'][t]
-        
-        # Extract band values at nautical chart locations
         H, W = blue.shape
-        coords = nautical_charts['coordinates']
-        depths = nautical_charts['depths']
         
-        blue_values = []
-        green_values = []
-        valid_depths = []
-        
-        for i, (y, x) in enumerate(coords):
+        # 2. Train full-dataset model (strictly for cartographic visualization products)
+        blue_values_all = []
+        green_values_all = []
+        valid_depths_all = []
+        for i, (y, x) in enumerate(all_coords):
             y_idx = int(y * (H - 1))
             x_idx = int(x * (W - 1))
             if 0 <= y_idx < H and 0 <= x_idx < W:
-                blue_values.append(blue[y_idx, x_idx])
-                green_values.append(green[y_idx, x_idx])
-                valid_depths.append(depths[i])
+                blue_values_all.append(blue[y_idx, x_idx])
+                green_values_all.append(green[y_idx, x_idx])
+                valid_depths_all.append(all_depths[i])
+                
+        blue_values_all = np.array(blue_values_all)
+        green_values_all = np.array(green_values_all)
+        valid_depths_all = np.array(valid_depths_all)
         
-        blue_values = np.array(blue_values)
-        green_values = np.array(green_values)
-        valid_depths = np.array(valid_depths)
+        logger.info("Training full Random Forest model for product cartography...")
+        # Full model uses 12 enhanced features (GEBCO + spatial coords + nearest soundings)
+        gebco_2023 = np.load('intermediate_results/gebco_time_series.npy')[5]
+        coords_all = np.array([c for i, c in enumerate(all_coords)
+                               if 0 <= int(c[0]*(H-1)) < H and 0 <= int(c[1]*(W-1)) < W])
+        r2_rf_all = classic_models.train_rf(blue_values_all, green_values_all, valid_depths_all,
+                                            gebco_band=gebco_2023, coords=coords_all, use_enhanced=True)
+        logger.info(f"Full Random Forest model trained successfully, R²: {r2_rf_all:.4f}")
         
-        # Train Random Forest model
-        r2_rf = classic_models.train_rf(blue_values, green_values, valid_depths)
-        logger.info(f"Random Forest model training completed, R²: {r2_rf:.4f}")
-        
-        # Save model parameters and model itself
         os.makedirs('intermediate_results/model_params', exist_ok=True)
         np.save('intermediate_results/model_params/rf_params.npy', classic_models.rf_params)
         dump(classic_models.rf_model, 'intermediate_results/model_params/rf_model.joblib')
         
+        # 3. Train Spatially Blocked 5-Fold Cross-Validation models
+        for k in range(5):
+            logger.info(f"Training spatial fold {k}/5 surrogate model...")
+            train_mask = (fold_ids != k)
+            train_coords = all_coords[train_mask]
+            train_depths = all_depths[train_mask]
+            
+            blue_values_k = []
+            green_values_k = []
+            valid_depths_k = []
+            for i, (y, x) in enumerate(train_coords):
+                y_idx = int(y * (H - 1))
+                x_idx = int(x * (W - 1))
+                if 0 <= y_idx < H and 0 <= x_idx < W:
+                    blue_values_k.append(blue[y_idx, x_idx])
+                    green_values_k.append(green[y_idx, x_idx])
+                    valid_depths_k.append(train_depths[i])
+                    
+            blue_values_k = np.array(blue_values_k)
+            green_values_k = np.array(green_values_k)
+            valid_depths_k = np.array(valid_depths_k)
+            
+            fold_classic = ClassicModels()
+            # Enhanced feature training: GEBCO + coords + nearest soundings
+            gebco_2023 = np.load('intermediate_results/gebco_time_series.npy')[5]  # 2023 GEBCO grid
+            train_coords_valid = np.array([c for i, c in enumerate(train_coords)
+                                           if 0 <= int(c[0]*(H-1)) < H and 0 <= int(c[1]*(W-1)) < W])
+            r2_rf_k = fold_classic.train_rf(blue_values_k, green_values_k, valid_depths_k,
+                                            gebco_band=gebco_2023, coords=train_coords_valid, use_enhanced=True)
+            logger.info(f"Fold {k} Random Forest model trained successfully, R²: {r2_rf_k:.4f}")
+            
+            # Save fold-specific models and parameter metadata
+            dump(fold_classic.rf_model, f'intermediate_results/model_params/rf_model_fold_{k}.joblib')
+            np.save(f'intermediate_results/model_params/rf_params_fold_{k}.npy', fold_classic.rf_params)
+            
         return classic_models
-        
     except Exception as e:
-        logger.error(f"Classic model training failed: {str(e)}")
+        logger.error(f"Surrogate model training failed: {str(e)}")
         raise
 
-def stage1_8_model_validation(sentinel_time_series):
-    """Stage 1.8: Classic model validation"""
+def stage1_8_model_validation(sentinel_time_series, gebco_time_series=None):
     try:
         logger.info("Starting classic model validation...")
         classic_models = load_trained_classic_models()
         
-        # 2. Create output directory
+        # 2. Create output directories
         output_dir = 'results/classic_models'
         os.makedirs(output_dir, exist_ok=True)
 
@@ -307,23 +357,11 @@ def stage1_8_model_validation(sentinel_time_series):
             logger.error(f"Error loading or processing land/water mask for RF plot: {e}. Skipping overlay.")
         # --------------------------------------------
         
-        # Load nautical charts needed for coordinates
-        try:
-            import ee
-            if not ee.data._credentials:
-                 ee.Authenticate()
-                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
-        except ImportError:
-             logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
-             raise
-        except Exception as e:
-             logger.error(f"GEE initialization failed: {e}")
-             raise
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
 
-        # 4. Predict for all years
+        # 4. Predict bathymetry across all years
         depths = []
         years = range(2018, 2024)
         for t, year in enumerate(years):
@@ -333,93 +371,122 @@ def stage1_8_model_validation(sentinel_time_series):
             depths.append(depth)
             logger.info(f"Completed prediction for year {year}")
         
-        # 5. Create and save time series composite plot (pass land mask and chart coords)
-        chart_coords_rf = nautical_charts['coordinates']  # Get coordinates
+        # 5. Create and save annual bathymetric synthesis map
+        chart_coords_rf = nautical_charts['coordinates'] # Get coordinates
         create_time_series_plot(depths, years, 'rf', output_dir, land_mask_array=land_mask_array, chart_coords=chart_coords_rf)
         
-        # 6. Compare 2023 predictions with nautical chart data
-        # Get 2023 prediction results and actual nautical chart data
-        t = -1  # 2023 index
-        predicted_depth = depths[t]
-        # H, W defined earlier during mask loading or prediction
-        if 'H' not in locals(): H, W = predicted_depth.shape
-
-        # Extract predicted values at nautical chart locations (nautical_charts is already loaded)
-        coords = nautical_charts['coordinates']
-        true_depths = np.abs(nautical_charts['depths'])
-
-        predicted_values = []
-        valid_true_depths = []
-
-        for i, (y, x) in enumerate(coords):
-            y_idx = int(y * (H - 1))
-            x_idx = int(x * (W - 1))
-            if 0 <= y_idx < H and 0 <= x_idx < W:
-                pred_value = predicted_depth[y_idx, x_idx]
-                if np.isfinite(pred_value) and pred_value > 0:
-                    predicted_values.append(pred_value)
-                    valid_true_depths.append(true_depths[i])
-
-        predicted_values = np.array(predicted_values)
-        valid_true_depths = np.array(valid_true_depths)
-
-        # Calculate validation metrics
-        rmse = np.nan
-        mae = np.nan
-        r2 = np.nan
-        if len(valid_true_depths) > 0 and len(predicted_values) > 0:
-            rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
-            mae = np.mean(np.abs(predicted_values - valid_true_depths))
-            denom = np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
-            if denom > 1e-9: # Avoid division by zero
-                r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / denom
-            else:
-                r2 = 0.0 # Or handle as undefined
-        logger.info("RF Validation Results (2023):")
-        logger.info(f"RMSE: {rmse:.2f} m")
-        logger.info(f"MAE: {mae:.2f} m")
-        logger.info(f"R²: {r2:.4f}")
-        logger.info(f"Number of points: {len(valid_true_depths)}")
-        # Create and save Scatter Plot
+        # 6. Out-of-Fold (OOF) 5-Fold Spatial Cross-Validation Evaluation
+        logger.info("Executing Enhanced Random Forest Out-of-Fold (OOF) Spatial CV Evaluation...")
+        folds_path = 'intermediate_results/validation/spatial_folds.npz'
+        if not os.path.exists(folds_path):
+            raise FileNotFoundError(f"Spatial fold data not found: {folds_path}. Please run Stage 1.5 first.")
+            
+        folds_data = np.load(folds_path)
+        all_coords = folds_data['coordinates']
+        all_depths = folds_data['depths']
+        fold_ids = folds_data['fold_ids']
+        
+        predicted_values_oof = []
+        true_depths_oof = []
+        point_ids_oof = []
+        
+        # Optical features for 2023 used for validation
+        t_latest = -1
+        blue_2023 = sentinel_time_series['blue'][t_latest]
+        green_2023 = sentinel_time_series['green'][t_latest]
+        H_rf, W_rf = blue_2023.shape
+        
+        for k in range(5):
+            # Load Fold k model
+            fold_classic = load_trained_classic_models_fold(k)
+            fold_mask = (fold_ids == k)
+            test_coords = all_coords[fold_mask]
+            test_depths = all_depths[fold_mask]
+            test_indices = np.where(fold_mask)[0]
+            
+            # Predict on Fold k test soundings
+            fold_pred_map = fold_classic.predict_rf(blue_2023, green_2023, gebco_band=gebco_time_series[t_latest])
+            
+            for idx_in_test, (y, x) in enumerate(test_coords):
+                y_idx = int(y * (H_rf - 1))
+                x_idx = int(x * (W_rf - 1))
+                if 0 <= y_idx < H_rf and 0 <= x_idx < W_rf:
+                    pred_val = fold_pred_map[y_idx, x_idx]
+                    if np.isfinite(pred_val) and pred_val > 0:
+                        predicted_values_oof.append(pred_val)
+                        true_depths_oof.append(test_depths[idx_in_test])
+                        point_ids_oof.append(test_indices[idx_in_test])
+                        
+        predicted_values_oof = np.array(predicted_values_oof)
+        true_depths_oof = np.array(true_depths_oof)
+        point_ids_oof = np.array(point_ids_oof)
+        
+        # Save RF OOF prediction records
+        os.makedirs('results/validation', exist_ok=True)
+        oof_df_path = 'results/validation/oof_predictions_rf.csv'
+        np.savetxt(
+            oof_df_path,
+            np.column_stack((point_ids_oof, true_depths_oof, predicted_values_oof)),
+            header='point_id,observed_depth,predicted_depth',
+            comments='',
+            delimiter=','
+        )
+        logger.info(f"RF OOF predictions saved to: {oof_df_path}")
+        
+        # Compute OOF performance metrics
+        if len(true_depths_oof) > 0 and len(predicted_values_oof) > 0:
+            rmse = np.sqrt(np.mean((predicted_values_oof - true_depths_oof) ** 2))
+            mae = np.mean(np.abs(predicted_values_oof - true_depths_oof))
+            denom = np.sum((true_depths_oof - np.mean(true_depths_oof)) ** 2)
+            r2 = 1 - np.sum((true_depths_oof - predicted_values_oof) ** 2) / denom if denom > 1e-9 else 0.0
+        else:
+            rmse, mae, r2 = np.nan, np.nan, np.nan
+            logger.warning("No valid RF OOF evaluation pairs found.")
+            
+        logger.info("Enhanced RF Spatially Blocked Cross-Validation (OOF) Results:")
+        logger.info(f"OOF RMSE: {rmse:.2f} m")
+        logger.info(f"OOF MAE: {mae:.2f} m")
+        logger.info(f"OOF R²: {r2:.4f}")
+        logger.info(f"Evaluated Soundings Count: {len(true_depths_oof)}")
+        
+        # Plot RF OOF scatter validation figure
         FONTSIZE_MAIN_LABELS = 12
         FONTSIZE_MAIN_TICKS = 10
-        FONTSIZE_TEXT_BOX = 10 # Slightly smaller for text box
-        fig_scatter = plt.figure(figsize=(7, 5.5)) # Match RF plot aspect ratio
+        FONTSIZE_TEXT_BOX = 10
+        fig_scatter = plt.figure(figsize=(7, 5.5))
         ax_scatter = fig_scatter.add_subplot(1, 1, 1)
-        if len(valid_true_depths) > 0 and len(predicted_values) > 0 and np.isfinite(r2):
-            scatter = ax_scatter.scatter(valid_true_depths, predicted_values, alpha=0.6, s=30, label='Samples')
-            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')  # Match RF plot
+        if len(true_depths_oof) > 0 and len(predicted_values_oof) > 0 and np.isfinite(r2):
+            scatter = ax_scatter.scatter(true_depths_oof, predicted_values_oof, alpha=0.6, s=30, label='OOF Samples')
+            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')
             ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-            # Use RF metrics, format matches RF plot (no N)
-            text_str = f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}'
+            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R²: {r2:.4f}'
             ax_scatter.text(0.95, 0.05, text_str,
                       transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
                       verticalalignment='bottom', horizontalalignment='right',
                       bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
-            ax_scatter.legend(loc='upper left') # Match RF plot
+            ax_scatter.legend(loc='upper left')
         else:
-            ax_scatter.text(0.5, 0.5, 'No valid data for scatter plot', ha='center', va='center')
-            ax_scatter.set_xlim(0, 75) # Still set limits even if no data
+            ax_scatter.text(0.5, 0.5, 'No valid OOF data', ha='center', va='center')
+            ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-
+            
         ax_scatter.set_xlabel('Measured Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
         ax_scatter.set_ylabel('Predicted Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
         ax_scatter.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
-        ax_scatter.grid(True, linestyle='--', alpha=0.6) # Match RF plot
-        # No title, matching RF plot
+        ax_scatter.grid(True, linestyle='--', alpha=0.6)
         fig_scatter.tight_layout()
-        save_path_scatter = os.path.join(output_dir, 'rf_validation_2023.jpg') # Correct filename
+        save_path_scatter = os.path.join(output_dir, 'rf_validation_2023.jpg')
         plt.savefig(save_path_scatter, dpi=600, bbox_inches='tight')
-        logger.info(f"RF Scatter plot saved to: {save_path_scatter}")
-        plt.close(fig_scatter) # Close the specific figure
+        logger.info(f"RF OOF scatter plot saved to: {save_path_scatter}")
+        plt.close(fig_scatter)
 
     except Exception as e:
         logger.error(f"Classic model validation failed: {str(e)}")
         raise
 
 def create_time_series_plot(depths, years, model_name, output_dir, land_mask_array=None, chart_coords=None):
-    """Create time series composite plot"""
+    """Create annual time-series composite figure."""
     try:
         # Increase font sizes for better visibility when shrunk in Word column
         FONTSIZE_MAIN_LABELS = 14  # Axes labels, colorbar label
@@ -494,7 +561,7 @@ def create_time_series_plot(depths, years, model_name, output_dir, land_mask_arr
                 ax.imshow(land_mask_array, cmap=cmap_land, norm=norm_land, interpolation='nearest', zorder=10, extent=extent, origin='upper', aspect='auto')
             # -------------------------
 
-        # Add colorbar
+        # Add horizontal colorbar
         if im:
             fig.tight_layout(rect=[0, 0.05, 1, 0.95])
             cax = fig.add_axes([0.15, 0.03, 0.7, 0.03])
@@ -509,79 +576,79 @@ def create_time_series_plot(depths, years, model_name, output_dir, land_mask_arr
         plt.close(fig) # Close the figure
         
     except Exception as e:
-        logger.error(f"Failed to create time series plot: {str(e)}")
+        logger.error(f"Failed to create time-series synthesis figure: {str(e)}")
         raise
 
 def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sentinel_years):
-    """Stage 2: S3GM model processing"""
+    """Stage 2: S3GM Spatio-Temporal Generative Diffusion Sampling."""
     try:
-        # Create necessary directories
+        # Create directories
         results_dir = 'results'
         models_dir = os.path.join(results_dir, 's3gm_pretrained_models')  
         time_series_dir = os.path.join(results_dir, 's3gm_time_series') 
         os.makedirs(results_dir, exist_ok=True)
         os.makedirs(models_dir, exist_ok=True)
         os.makedirs(time_series_dir, exist_ok=True)
-        # Stage 2.1: Pretraining
+        # Stage 2.1: S3GM Generative Pretraining
         pretrained_model_path = os.path.join(models_dir, 's3gm_pretrained.pth')
         if not os.path.exists(pretrained_model_path):
-            logger.info("Executing Stage 2.1: Pretraining phase")
+            logger.info("Executing Stage 2.1: S3GM Generative Pretraining Phase")
             
-            # Load trained classic models first
+            # Load trained surrogate model
             classic_models = load_trained_classic_models()
             system.set_classic_models(classic_models)
             
-            # Generate predictions using classic models
+            # Generating prior depth field with surrogate model
             classic_predictions = []
             for year in sentinel_years:
                 blue = sentinel_time_series['blue'][year - 2018]
                 green = sentinel_time_series['green'][year - 2018]
-                depth = system.classic_models.predict_rf(blue, green)
+                depth = system.classic_models.predict_rf(blue, green, gebco_band=gebco_time_series[year - 2018])
                 if np.isnan(depth).any() or np.isinf(depth).any():
-                    logger.warning(f"Classic model prediction for {year} contains invalid values")
+                    logger.warning(f"{year}surrogate prediction contains invalid values")
                     depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
                 classic_predictions.append(depth)
             
-            # Convert predictions to time series array (T, H, W)
+            # Stacking annual surrogate predictions into time-series tensor (T, H, W)
             classic_time_series = np.stack(classic_predictions)
             
-            # Normalize data
+            # Normalizing datasets for diffusion network
             preprocessor = DataPreprocessor()
             normalized_classic, classic_stats = preprocessor._normalize_data(classic_time_series, 'classic')
             normalized_gebco, gebco_stats = preprocessor._normalize_data(gebco_time_series, 'gebco')
             
-            # Save statistics for later denormalization
+            # Saving normalization parameters for post-processing
             np.save('intermediate_results/classic_stats.npy', classic_stats)
             np.save('intermediate_results/gebco_stats.npy', gebco_stats)
             
-            # Save normalized data
+            # Save normalized data arrays
             np.save('intermediate_results/classic_normalized.npy', normalized_classic)
             np.save('intermediate_results/gebco_normalized.npy', normalized_gebco)
-            logger.info("Saved normalized classic model and GEBCO data")
+            logger.info("Saved normalized surrogate predictions and GEBCO grids")
             
             pretrain_data = {
-                'classic': normalized_classic,  # Now in [0,1] range
-                'gebco': normalized_gebco,     # Now in [0,1] range
+                'classic': normalized_classic,  # Normalized scale
+                'gebco': normalized_gebco,     # Normalized scale
             }
             
-            # Execute pretraining (model is saved automatically inside pretrain function)
+            # Running pretraining (model checkpoint saved automatically)
             system.s3gm.pretrain(
                 classic_data=pretrain_data['classic'],
                 gebco_data=pretrain_data['gebco'],
                 save_path=pretrained_model_path
             )
         else:
-            logger.info("Loading existing pretrained model")
+            logger.info("Loading existing pretrained S3GM model checkpoint")
             system.s3gm.load_pretrained(pretrained_model_path)
         
-        # Log range adaptation parameters
+        # Log range adaptation configuration
         logger.info("Model configuration:")
         logger.info(f"  - Range adaptation: {system.s3gm.config.range_adaptation['enabled']}")
         logger.info(f"  - Mixed activation: {system.s3gm.config.range_adaptation['use_mixed_activation']}")
-        logger.info(f"  - Land marker value: {system.s3gm.config.range_adaptation['land_value']}")
+        logger.info(f"  - Land flag: {system.s3gm.config.range_adaptation['land_value']}")
         
-        # Validate model before Stage 2.2
-        logger.info("Validating model...")
+        # Validate model forward output before Stage 2.2
+        logger.info("Validating model output...")
         test_input = torch.randn(1, 6, 5, 64, 64).to(system.s3gm.device)
         timesteps = torch.zeros(1, dtype=torch.long).to(system.s3gm.device)
         with torch.no_grad():
@@ -593,70 +660,93 @@ def stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sent
                 latent_mask=torch.ones(1, 6, 1, 1, 1).to(system.s3gm.device),
                 frame_indices=torch.arange(6).unsqueeze(0).to(system.s3gm.device)
             )
-            # Get first element of model output (main output)
+            # Extract primary model output
             test_output = test_output[0]
-            # Validation logic
+            # Verify non-zero output
             if torch.all(torch.eq(test_output, torch.zeros_like(test_output))):
-                raise ValueError("Pretrained model output is all zeros, retraining required")
+                raise ValueError("Pretrained model output is all zeros; re-training required")
             logger.info(f"Model test output range: [{test_output.min().item():.4f}, {test_output.max().item():.4f}]")
             
-        # Stage 2.2: Conditional sampling
-        logger.info("Executing Stage 2.2: Conditional sampling phase")
-        # Get 2023 nautical chart data
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        # Stage 2.2: Conditional Posterior Sampling
+        logger.info("Executing Stage 2.2: S3GM Conditional Posterior Sampling (DPS)")
+        # Loading 2023 sounding measurements
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         
-        # Normalize nautical chart data
-        preprocessor = DataPreprocessor()
+        # Normalizing sounding measurements
         normalized_depths, chart_stats = preprocessor._normalize_data(
             nautical_charts['depths'], 
             data_type='chart'
         )
         
-        # Save nautical chart statistics (for later analysis)
+        # Save chart sounding normalization statistics
         os.makedirs('intermediate_results', exist_ok=True)
         np.save('intermediate_results/chart_stats.npy', chart_stats)
-        logger.info(f"Nautical chart statistics saved: {chart_stats}")
+        logger.info(f"Sounding normalization parameters saved: {chart_stats}")
         
-        # Update nautical_charts dictionary
+        # Updating normalized sounding dictionary
         nautical_charts_normalized = {
             'depths': normalized_depths,
             'coordinates': nautical_charts['coordinates']
         }
         
-        # Load preprocessed data
-        # Note: Assuming classic_data and gebco_data are already normalized
-        classic_data_normalized = np.load('intermediate_results/classic_normalized.npy')
-        gebco_data_normalized = np.load('intermediate_results/gebco_normalized.npy')
+        # Normalizing GEBCO bathymetric grids
+        normalized_gebco, gebco_stats = preprocessor._normalize_data(gebco_time_series, 'gebco')
+        np.save('intermediate_results/gebco_normalized.npy', normalized_gebco)
+        np.save('intermediate_results/gebco_stats.npy', gebco_stats)
 
-        # Execute conditional sampling - pass classic model and GEBCO data
-        results = system.s3gm.conditional_sampling(
-            measurements=nautical_charts_normalized['depths'],
-            measurement_coordinates=nautical_charts_normalized['coordinates'],
-            years=sentinel_years,
-            classic_data=classic_data_normalized,
-            gebco_data=gebco_data_normalized
-        )
+        # 2.2.1 Full cartographic production sampling (skipped in diagnostic mode)
+        logger.info("Diagnostic mode: skipping full-dataset reconstruction sampling...")
         
-        # Check results shape and content before saving
-        if isinstance(results, torch.Tensor):
-            results = results.cpu().numpy()
-        
-        # Save results with chart_stats
-        save_results(
-            depths=results,
-            years=sentinel_years,
-            output_dir=time_series_dir,
-            chart_stats=chart_stats
-        )
+        # 2.2.2 5-Fold Cross-Validation conditional sampling (Fold 0 diagnostic)
+        for k in range(1):
+            logger.info(f"Executing Fold {k}/5 conditional sampling...")
+            
+            # Generate surrogate predictions with Fold k model
+            fold_classic = load_trained_classic_models_fold(k)
+            classic_predictions_k = []
+            for year in sentinel_years:
+                blue = sentinel_time_series['blue'][year - 2018]
+                green = sentinel_time_series['green'][year - 2018]
+                depth = fold_classic.predict_rf(blue, green, gebco_band=gebco_time_series[year - 2018])
+                if np.isnan(depth).any() or np.isinf(depth).any():
+                    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+                classic_predictions_k.append(depth)
+            classic_time_series_k = np.stack(classic_predictions_k)
+            
+            normalized_classic_k, classic_stats_k = preprocessor._normalize_data(classic_time_series_k, 'classic')
+            np.save(f'intermediate_results/classic_normalized_fold_{k}.npy', normalized_classic_k)
+            np.save(f'intermediate_results/classic_stats_fold_{k}.npy', classic_stats_k)
+            
+            # Conditional sampling with holdout test points masked (fold_id=k)
+            results_k = system.s3gm.conditional_sampling(
+                measurements=nautical_charts_normalized['depths'],
+                measurement_coordinates=nautical_charts_normalized['coordinates'],
+                years=sentinel_years,
+                classic_data=normalized_classic_k,
+                gebco_data=normalized_gebco,
+                fold_id=k
+            )
+            
+            if isinstance(results_k, torch.Tensor):
+                results_k = results_k.cpu().numpy()
+                
+            fold_output_dir = os.path.join(results_dir, 's3gm_time_series', f'fold_{k}')
+            save_results(
+                depths=results_k,
+                years=sentinel_years,
+                output_dir=fold_output_dir,
+                chart_stats=chart_stats
+            )
+            logger.info(f"Fold {k} conditional sampling completed, results saved to {fold_output_dir}!")
         
     except Exception as e:
         logger.error(f"Stage 2 processing failed: {str(e)}")
         raise
 
 def stage3_postprocessing():
-    """Stage 3: Post-processing analysis"""
+    """Stage 3: Post-processing and Spatial Uncertainty Visualization."""
     try:
         output_dir = 'results/s3gm_visualization'
         os.makedirs(output_dir, exist_ok=True)
@@ -680,99 +770,114 @@ def stage3_postprocessing():
         except Exception as e:
             logger.error(f"Error loading or processing land/water mask: {e}. Skipping overlay.")
 
-        try:
-            import ee
-            if not ee.data._credentials:
-                 ee.Authenticate()
-                 ee.Initialize(project='YOUR_GEE_PROJECT_ID')
-        except ImportError:
-             logger.error("Google Earth Engine Python API (ee) not found. Cannot get nautical charts.")
-             raise
-        except Exception as e:
-             logger.error(f"GEE initialization failed: {e}")
-             raise
-
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
 
-        chart_coords_s3gm = nautical_charts['coordinates']  # Get coordinates
+        chart_coords_s3gm = nautical_charts['coordinates'] # Get coordinates
         # Create time-series composite plot, passing the mask and chart coords
         create_time_series_plot(depths, years, 's3gm', output_dir, land_mask_array, chart_coords=chart_coords_s3gm)
 
-        # Validation part (Now starts here)
-        t = -1
-        predicted_depth = depths[t]
-        # H, W defined earlier during mask loading
-
-        coords = nautical_charts['coordinates']
-        true_depths = np.abs(nautical_charts['depths'])
-
-        predicted_values = []
-        valid_true_depths = []
-
-        # Extract valid points using the original predicted_depth before masking for plotting
-        for i, (y, x) in enumerate(coords):
-            y_idx = int(y * (H - 1))
-            x_idx = int(x * (W - 1))
-            if 0 <= y_idx < H and 0 <= x_idx < W:
-                pred_value = predicted_depth[y_idx, x_idx]
-                if np.isfinite(pred_value) and pred_value > 0:
-                    predicted_values.append(pred_value)
-                    valid_true_depths.append(true_depths[i])
-
-        predicted_values = np.array(predicted_values)
-        valid_true_depths = np.array(valid_true_depths)
-
-        if len(valid_true_depths) > 0 and len(predicted_values) > 0:
-            rmse = np.sqrt(np.mean((predicted_values - valid_true_depths) ** 2))
-            mae = np.mean(np.abs(predicted_values - valid_true_depths))
-            denom = np.sum((valid_true_depths - np.mean(valid_true_depths)) ** 2)
-            r2 = 1 - np.sum((valid_true_depths - predicted_values) ** 2) / denom if denom != 0 else -np.inf
+        # Validation part (Now starts here - Out-of-Fold 5-Fold Spatial CV Validation)
+        logger.info("Executing S3GM Out-of-Fold (OOF) Spatial CV Evaluation...")
+        folds_path = 'intermediate_results/validation/spatial_folds.npz'
+        if not os.path.exists(folds_path):
+            raise FileNotFoundError(f"Spatial fold data not found: {folds_path}. Please run Stage 1.5 first.")
+            
+        folds_data = np.load(folds_path)
+        all_coords = folds_data['coordinates']
+        all_depths = folds_data['depths']
+        fold_ids = folds_data['fold_ids']
+        
+        predicted_values_oof = []
+        true_depths_oof = []
+        point_ids_oof = []
+        
+        # Load fold predictions and extract holdout test soundings
+        for k in range(5):
+            fold_pred_path = f'results/s3gm_time_series/fold_{k}/bathymetry_2023.npy'
+            if not os.path.exists(fold_pred_path):
+                logger.warning(f"Fold {k} prediction file not found: {fold_pred_path}, skipping fold")
+                continue
+                
+            fold_pred_map = np.load(fold_pred_path)
+            fold_mask = (fold_ids == k)
+            test_coords = all_coords[fold_mask]
+            test_depths = all_depths[fold_mask]
+            test_indices = np.where(fold_mask)[0]
+            
+            for idx_in_test, (y, x) in enumerate(test_coords):
+                y_idx = int(y * (H - 1))
+                x_idx = int(x * (W - 1))
+                if 0 <= y_idx < H and 0 <= x_idx < W:
+                    pred_val = fold_pred_map[y_idx, x_idx]
+                    if np.isfinite(pred_val) and pred_val > 0:
+                        predicted_values_oof.append(pred_val)
+                        true_depths_oof.append(test_depths[idx_in_test])
+                        point_ids_oof.append(test_indices[idx_in_test])
+                        
+        predicted_values_oof = np.array(predicted_values_oof)
+        true_depths_oof = np.array(true_depths_oof)
+        point_ids_oof = np.array(point_ids_oof)
+        
+        # Save OOF predictions for statistical comparison
+        os.makedirs('results/validation', exist_ok=True)
+        oof_df_path = 'results/validation/oof_predictions_s3gm.csv'
+        np.savetxt(
+            oof_df_path,
+            np.column_stack((point_ids_oof, true_depths_oof, predicted_values_oof)),
+            header='point_id,observed_depth,predicted_depth',
+            comments='',
+            delimiter=','
+        )
+        logger.info(f"S3GM OOF prediction results saved to: {oof_df_path}")
+        
+        if len(true_depths_oof) > 0 and len(predicted_values_oof) > 0:
+            rmse = np.sqrt(np.mean((predicted_values_oof - true_depths_oof) ** 2))
+            mae = np.mean(np.abs(predicted_values_oof - true_depths_oof))
+            denom = np.sum((true_depths_oof - np.mean(true_depths_oof)) ** 2)
+            r2 = 1 - np.sum((true_depths_oof - predicted_values_oof) ** 2) / denom if denom != 0 else -np.inf
         else:
             rmse, mae, r2 = np.nan, np.nan, np.nan
-            logger.warning("No valid overlapping points found for validation.")
-
-        logger.info("S3GM Model Validation Results:")
-        logger.info(f"RMSE: {rmse:.2f} m" if np.isfinite(rmse) else "RMSE: N/A")
-        logger.info(f"MAE: {mae:.2f} m" if np.isfinite(mae) else "MAE: N/A")
-        logger.info(f"R²: {r2:.4f}" if np.isfinite(r2) else "R²: N/A")
-        logger.info(f"Number of validation points: {len(valid_true_depths)}")
-
-        # Create scatter plot with the same style as RF validation
+            logger.warning("No valid OOF evaluation pairs found.")
+            
+        logger.info("S3GM Spatially Blocked CV (OOF) Results:")
+        logger.info(f"OOF RMSE: {rmse:.2f} m" if np.isfinite(rmse) else "OOF RMSE: N/A")
+        logger.info(f"OOF MAE: {mae:.2f} m" if np.isfinite(mae) else "OOF MAE: N/A")
+        logger.info(f"OOF R²: {r2:.4f}" if np.isfinite(r2) else "OOF R²: N/A")
+        logger.info(f"Independent Evaluated Soundings Count: {len(true_depths_oof)}")
+        
+        # Plot OOF independent validation scatter plot
         FONTSIZE_MAIN_LABELS = 12
         FONTSIZE_MAIN_TICKS = 10
-        FONTSIZE_TEXT_BOX = 10 # Slightly smaller for text box
-        fig_scatter = plt.figure(figsize=(7, 5.5)) # Match RF plot aspect ratio
+        FONTSIZE_TEXT_BOX = 10
+        fig_scatter = plt.figure(figsize=(7, 5.5))
         ax_scatter = fig_scatter.add_subplot(1, 1, 1)
-        if len(valid_true_depths) > 0 and len(predicted_values) > 0 and np.isfinite(r2):
-            scatter = ax_scatter.scatter(valid_true_depths, predicted_values, alpha=0.6, s=30, label='Samples')
-            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')  # Match RF plot
+        if len(true_depths_oof) > 0 and len(predicted_values_oof) > 0 and np.isfinite(r2):
+            scatter = ax_scatter.scatter(true_depths_oof, predicted_values_oof, alpha=0.6, s=30, label='OOF Samples')
+            ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')
             ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-            # Use S3GM metrics, format matches RF plot (no N)
-            text_str = f'RMSE: {rmse:.2f} m\nMAE: {mae:.2f} m\nR²: {r2:.4f}' 
+            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R²: {r2:.4f}'
             ax_scatter.text(0.95, 0.05, text_str,
                       transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
                       verticalalignment='bottom', horizontalalignment='right',
                       bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
-            ax_scatter.legend(loc='upper left') # Match RF plot
+            ax_scatter.legend(loc='upper left')
         else:
-            ax_scatter.text(0.5, 0.5, 'No valid data for scatter plot', ha='center', va='center')
-            ax_scatter.set_xlim(0, 75) # Still set limits even if no data
+            ax_scatter.text(0.5, 0.5, 'No valid OOF data', ha='center', va='center')
+            ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-
+            
         ax_scatter.set_xlabel('Measured Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
         ax_scatter.set_ylabel('Predicted Depth (m)', fontsize=FONTSIZE_MAIN_LABELS)
         ax_scatter.tick_params(axis='both', which='major', labelsize=FONTSIZE_MAIN_TICKS)
-        ax_scatter.grid(True, linestyle='--', alpha=0.6) # Match RF plot
-        # No title, matching RF plot
+        ax_scatter.grid(True, linestyle='--', alpha=0.6)
         fig_scatter.tight_layout()
-        save_path_scatter = os.path.join(output_dir, 's3gm_validation_2023.jpg') # Correct filename
+        save_path_scatter = os.path.join(output_dir, 's3gm_validation_2023.jpg')
         plt.savefig(save_path_scatter, dpi=600, bbox_inches='tight')
-        logger.info(f"S3GM Scatter plot saved to: {save_path_scatter}")
-        plt.close(fig_scatter) # Close the specific figure
-
+        logger.info(f"S3GM OOF scatter plot saved to: {save_path_scatter}")
+        plt.close(fig_scatter)
         # --- End of S3GM Scatter Plot ---
 
         def lon_formatter(x, pos): return f'{x:.1f}°E'
@@ -868,11 +973,11 @@ def stage3_postprocessing():
         # --- End of Difference Map ---
 
     except Exception as e:
-        logger.error(f"Post-processing analysis failed: {str(e)}")
+        logger.error(f"Stage 3 post-processing analysis failed: {str(e)}")
         raise
 
 def load_trained_classic_models():
-    """Load trained classic models and parameters"""
+    """Load trained full surrogate model and parameters."""
     try:
         classic_models = ClassicModels()
         
@@ -886,56 +991,68 @@ def load_trained_classic_models():
         return classic_models
         
     except Exception as e:
-        logger.error(f"Failed to load classic models: {str(e)}")
+        logger.error(f"Failed to load surrogate model: {str(e)}")
+        raise
+
+def load_trained_classic_models_fold(fold_id):
+    """Load fold-specific surrogate model and parameters."""
+    try:
+        classic_models = ClassicModels()
+        rf_params = np.load(f'intermediate_results/model_params/rf_params_fold_{fold_id}.npy', allow_pickle=True).item()
+        classic_models.rf_params = rf_params
+        classic_models.rf_model = load(f'intermediate_results/model_params/rf_model_fold_{fold_id}.joblib')
+        return classic_models
+    except Exception as e:
+        logger.error(f"Failed to load Fold {fold_id} surrogate model: {str(e)}")
         raise
 
 def denormalize_bathymetry(normalized_data: np.ndarray, stats: Dict[str, float]) -> np.ndarray:
-    """Denormalize bathymetry data using Min-Max and enforce physical constraints"""
+    """Denormalize bathymetry data to physical meters and enforce physical constraints."""
     try:
-        # Get physical range and special values from stats
+        # Extract physical depth range and special value flags
         min_phys = stats.get('min_phys', 0.0)
         max_phys = stats.get('max_phys', 90.0)
         land_value_norm = stats.get('land_value', 1.5)
         eps = 1e-6
 
-        # Identify land regions (using isclose to handle floating point errors)
+        # Identify land pixels with tolerance
         land_mask = np.isclose(normalized_data, land_value_norm)
         
-        # Check actual data range (for debugging)
+        # Check data range
         valid_data = normalized_data[~land_mask & ~np.isnan(normalized_data)]
         if len(valid_data) > 0:
             actual_min, actual_max = valid_data.min(), valid_data.max()
-            logger.info(f"Valid data range before denormalization: [{actual_min:.4f}, {actual_max:.4f}]")
-            # Warn if values exceed [-1, 1] range
+            logger.info(f"Pre-denormalization valid range: [{actual_min:.4f}, {actual_max:.4f}]")
+            # Check for values outside [-1, 1]
             if actual_min < -1.0 - eps or actual_max > 1.0 + eps:
-                 logger.warning(f"  Note: Valid data range exceeds expected [-1, 1] interval!")
+                 logger.warning(f"  Note: Valid data range exceeds expected [-1, 1] interval.")
         else:
-            logger.warning("No valid (non-land/NaN) data found before denormalization")
+            logger.warning("No valid marine data found prior to denormalization.")
 
-        # Execute denormalization: phys = ((norm + 1) / 2) * (max_phys - min_phys) + min_phys
+        # Denormalization: phys = ((norm + 1) / 2) * (max_phys - min_phys) + min_phys
         depth_denorm = ((normalized_data + 1) / 2) * (max_phys - min_phys) + min_phys
 
-        # Handle special regions: set land areas to 0m (or NaN as needed)
+        # Set land pixels to 0m (or NaN)
         depth_denorm = np.where(land_mask, 0.0, depth_denorm)
         
-        # Enforce physical constraints: depth must be non-negative
+        # Enforce non-negative physical depth constraint
         sea_mask = ~land_mask
         if np.any(depth_denorm[sea_mask] < 0):
             neg_count = np.sum(depth_denorm[sea_mask] < 0)
             total_count = np.sum(sea_mask)
-            logger.warning(f"Negative depth values detected, {(neg_count/total_count)*100:.2f}% of sea pixels (should not occur)")
+            logger.warning(f"Negative depths detected across marine pixels: {(neg_count/total_count)*100:.2f}% (clipped to zero)")
             logger.warning(f"Negative value range: [{depth_denorm[sea_mask & (depth_denorm < 0)].min():.2f}, 0) m")
             depth_denorm[sea_mask] = np.maximum(depth_denorm[sea_mask], 0.0)
         
-        # Handle possible NaN values
-        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0)
+        # Handle NaN values
+        depth_denorm = np.nan_to_num(depth_denorm, nan=0.0)  # Map NaNs to 0m
         
-        # Final check and logging
+        # Final range check and logging
         if np.any(sea_mask):
             sea_depths = depth_denorm[sea_mask]
-            logger.info(f"Depth range after denormalization (sea): [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")
+            logger.info(f"Post-denormalization marine depth range: [{sea_depths.min():.2f}, {sea_depths.max():.2f}]")
         else:
-            logger.warning("No sea pixels after denormalization")
+            logger.warning("No marine pixels found after denormalization.")
             
         return depth_denorm
         
@@ -944,66 +1061,66 @@ def denormalize_bathymetry(normalized_data: np.ndarray, stats: Dict[str, float])
         raise
 
 def save_results(depths, years, output_dir, chart_stats):
-    """Save prediction results
+    """Save denormalized bathymetry prediction outputs.
     
     Args:
-        depths: Tensor with shape [1, T, C, H, W], where:
+        depths: Tensor of shape [1, T, C, H, W]
             - 1: batch size
-            - T: number of time steps (years)
-            - C: number of channels (components)
-            - H, W: image height and width
-        output_dir: Output directory
-        chart_stats: Statistics of nautical chart data
+            - T: Number of time frames (years)
+            - C: Number of channels
+            - H, W: Height and width
+        output_dir: Destination directory
+        chart_stats: Sounding normalization statistics
     """
     try:
         os.makedirs(output_dir, exist_ok=True)
         
-        # Denormalize and save prediction results for each year
+        # Denormalize and save annual prediction rasters
         for t, year in enumerate(years):
-            # Get depth data for current year (channel 2 is depth data)
-            depth_data = depths[0, t, 2]  # Shape should be [H, W]
+            # Extract Channel 2 (depth channel)
+            depth_data = depths[0, t, 2]  # Shape [H, W]
             
-            # Check data before denormalization
-            logger.info(f"Year {year} before denormalization:")
+            # Inspect data pre-denormalization
+            logger.info(f"{year}Pre-denormalization stats:")
             logger.info(f"- Data range: [{depth_data.min():.4f}, {depth_data.max():.4f}]")
-            logger.info(f"- Non-zero value distribution: {np.percentile(depth_data[depth_data != 0], [25, 50, 75])}")
+            logger.info(f"- Non-zero distribution: {np.percentile(depth_data[depth_data != 0], [25, 50, 75])}")
             
-            # Denormalize using unified chart statistics
+            # Denormalize using chart statistics
             depth_denorm = denormalize_bathymetry(depth_data, chart_stats)
             
-            # Check after denormalization
-            logger.info(f"Year {year} after denormalization:")
+            # Inspect post-denormalization data
+            logger.info(f"{year}Post-denormalization stats:")
             logger.info(f"- Data range: [{depth_denorm.min():.4f}, {depth_denorm.max():.4f}]")
             logger.info(f"- Valid value distribution: {np.percentile(depth_denorm[depth_denorm > 0], [25, 50, 75])}")
             
-            # Save denormalized results
+            # Save denormalized raster files
             output_path = os.path.join(output_dir, f'bathymetry_{year}.npy')
             np.save(output_path, depth_denorm)
             
-            logger.info(f"Saved prediction results for {year}: {output_path}")
-            logger.info(f"Year {year} depth range: [{depth_denorm.min():.2f}, {depth_denorm.max():.2f}] m")
-            logger.info(f"Year {year} land pixel ratio: {np.mean(np.abs(depth_data - 1.5) < 0.1):.2%}")
+            logger.info(f"Saved{year}prediction output: {output_path}")
+            logger.info(f"{year}depth range: [{depth_denorm.min():.2f}, {depth_denorm.max():.2f}] m")
+            logger.info(f"{year}land pixel ratio: {np.mean(np.abs(depth_data - 1.5) < 0.1):.2%}")
             
     except Exception as e:
         logger.error(f"Failed to save results: {str(e)}")
         raise
 
 def stage4_statistical_analysis():
-    """Stage 4: Statistical significance analysis"""
+    """Stage 4: Statistical Significance Analysis."""
     try:
-        logger.info("Starting Stage 4: Statistical significance analysis")
+        logger.info("Executing Stage 4: Statistical Significance Testing")
 
-        # 1. Load ground truth nautical chart data
-        logger.info("Loading nautical chart data...")
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        # 1. Load ground truth sounding measurements
+        logger.info("Loading ground truth sounding measurements...")
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         true_depths_all = np.abs(nautical_charts['depths'])
         coords = nautical_charts['coordinates']
-        logger.info(f"Successfully loaded {len(true_depths_all)} nautical chart measurement points")
+        logger.info(f"Successfully loaded {len(true_depths_all)} sounding points")
 
-        # 2. Load 2023 model prediction results
-        logger.info("Loading RF and S3GM 2023 prediction results...")
+        # 2. Load 2023 prediction maps for surrogate and S3GM
+        logger.info("Loading 2023 prediction maps for RF surrogate and S3GM...")
         rf_pred_path = 'results/classic_models/rf_2023.npy'
         s3gm_pred_path = 'results/s3gm_time_series/bathymetry_2023.npy'
 
@@ -1011,14 +1128,14 @@ def stage4_statistical_analysis():
             logger.error(f"RF prediction file not found: {rf_pred_path}. Please run Stage 1.8 first.")
             return
         if not os.path.exists(s3gm_pred_path):
-            logger.error(f"S3GM prediction file not found: {s3gm_pred_path}. Please run Stage 2 and 3 first.")
+            logger.error(f"S3GM prediction file not found: {s3gm_pred_path}. Please run Stages 2 and 3 first.")
             return
             
         rf_preds_map = np.load(rf_pred_path)
         s3gm_preds_map = np.load(s3gm_pred_path)
-        logger.info("Prediction results loaded successfully")
+        logger.info("Prediction rasters loaded successfully")
 
-        # 3. Align data
+        # 3. Align prediction rasters with sounding coordinates
         H, W = rf_preds_map.shape
         rf_preds_aligned = []
         s3gm_preds_aligned = []
@@ -1030,7 +1147,7 @@ def stage4_statistical_analysis():
                 rf_val = rf_preds_map[y_idx, x_idx]
                 s3gm_val = s3gm_preds_map[y_idx, x_idx]
                 
-                # Keep only points where all models and ground truth are valid
+                # Retain points where all predictions and observations are valid
                 if np.isfinite(rf_val) and np.isfinite(s3gm_val) and rf_val > 0 and s3gm_val > 0:
                     rf_preds_aligned.append(rf_val)
                     s3gm_preds_aligned.append(s3gm_val)
@@ -1039,27 +1156,27 @@ def stage4_statistical_analysis():
         rf_preds_aligned = np.array(rf_preds_aligned)
         s3gm_preds_aligned = np.array(s3gm_preds_aligned)
         true_depths_aligned = np.array(true_depths_aligned)
-        logger.info(f"After alignment, valid validation points for statistical analysis: {len(true_depths_aligned)}")
+        logger.info(f"Aligned valid soundings for statistical testing: {len(true_depths_aligned)}")
 
-        # 4. Calculate absolute errors
+        # 4. Compute absolute errors
         rf_abs_errors = np.abs(rf_preds_aligned - true_depths_aligned)
         s3gm_abs_errors = np.abs(s3gm_preds_aligned - true_depths_aligned)
 
-        # 5. Perform Wilcoxon signed-rank test
-        # H0: Median of error differences is 0
+        # 5. Execute Wilcoxon signed-rank test
+        # H0: Median of paired differences is zero
         # H1: RF error > S3GM error (S3GM error is smaller)
-        logger.info("Performing Wilcoxon signed-rank test...")
+        logger.info("Computing block-level Wilcoxon signed-rank test...")
         stat, p_value = wilcoxon(rf_abs_errors, s3gm_abs_errors, alternative='greater')
         logger.info("--- Wilcoxon Signed-Rank Test Results ---")
         logger.info(f"Statistic: {stat:.4f}")
         logger.info(f"P-value: {p_value:.6f}")
         if p_value < 0.05:
-            logger.info("Interpretation: P-value < 0.05, we reject the null hypothesis. S3GM model prediction error is statistically significantly lower than RF model.")
+            logger.info("Interpretation: p < 0.05. Statistically significant error reduction.")
         else:
-            logger.info("Interpretation: P-value >= 0.05, we cannot reject the null hypothesis. Insufficient statistical evidence that S3GM model is significantly better than RF model.")
+            logger.info("Interpretation: p >= 0.05. Differences not statistically significant.")
 
-        # 6. Use Bootstrapping to calculate 95% confidence interval for MAE improvement
-        logger.info("\nUsing Bootstrapping to calculate 95% confidence interval for MAE improvement...")
+        # 6. Compute 95% bootstrap confidence interval for MAE improvement
+        logger.info("\nComputing 95% Bootstrap Confidence Interval for MAE delta...")
         diff_mae = rf_abs_errors - s3gm_abs_errors # MAE_RF - MAE_S3GM
         n_iterations = 10000
         bootstrap_means = []
@@ -1070,25 +1187,25 @@ def stage4_statistical_analysis():
         confidence_interval = np.percentile(bootstrap_means, [2.5, 97.5])
         mean_improvement = np.mean(diff_mae)
         logger.info("--- 95% Confidence Interval for MAE Improvement (MAE_RF - MAE_S3GM) ---")
-        logger.info(f"Mean improvement: {mean_improvement:.4f} m")
-        logger.info(f"95% confidence interval: [{confidence_interval[0]:.4f}, {confidence_interval[1]:.4f}] m")
+        logger.info(f"Mean MAE improvement: {mean_improvement:.4f} m")
+        logger.info(f"95% Confidence Interval: [{confidence_interval[0]:.4f}, {confidence_interval[1]:.4f}] m")
         if confidence_interval[0] > 0:
-            logger.info("Interpretation: Confidence interval is entirely above zero, further confirming S3GM model provides robust and significant accuracy improvement.")
+            logger.info("Interpretation: CI is strictly positive, confirming robust precision improvement.")
         else:
-            logger.info("Interpretation: Confidence interval includes zero, indicating the model improvement may not be robust.")
+            logger.info("Interpretation: CI includes zero.")
 
     except Exception as e:
         logger.error(f"Stage 4 statistical analysis failed: {str(e)}")
         raise
 
 def stage5_in_depth_analysis():
-    """Stage 5: Model performance analysis by depth and terrain zones"""
+    """Stage 5: Detailed Performance Stratification Across Depth and Terrain Slope Zones."""
     try:
-        logger.info("Starting Stage 5: Detailed performance analysis by depth and terrain zones")
+        logger.info("Executing Stage 5: Zoning and Terrain Stratification Analysis")
 
-        # 1. Load data
-        logger.info("Loading nautical chart, RF and S3GM 2023 prediction results...")
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        # 1. Load ground truth soundings and predictions
+        logger.info("Loading soundings, RF, and S3GM 2023 outputs...")
+        aoi = [122.35, 30.62, 122.6, 30.8]
         preprocessor = DataPreprocessor(region=aoi)
         nautical_charts = preprocessor.get_sparse_points()
         true_depths_all = np.abs(nautical_charts['depths'])
@@ -1109,7 +1226,7 @@ def stage5_in_depth_analysis():
 
         s3gm_preds_map = np.load(s3gm_pred_path)
         
-        # 2. Align data
+        # 2. Align data points
         H, W = rf_preds_map.shape
         aligned_data = []
         for i, (y, x) in enumerate(coords):
@@ -1126,10 +1243,10 @@ def stage5_in_depth_analysis():
                         'x_idx': x_idx
                     })
         
-        logger.info(f"After alignment, valid points for analysis: {len(aligned_data)}")
+        logger.info(f"Aligned valid soundings for stratification analysis: {len(aligned_data)}")
 
-        # 3. Analysis by depth zones
-        logger.info("\n--- Model performance analysis by depth zones ---")
+        # 3. Stratify performance across depth zones
+        logger.info("\n--- Performance Stratification Across Depth Zones ---")
         depth_bins = {
             'Shallow (0-10m)': (0, 10),
             'Intermediate (10-30m)': (10, 30),
@@ -1155,8 +1272,8 @@ def stage5_in_depth_analysis():
             print(f"| {name:<20} | RF    | {len(true):<4} | {rf_rmse:<8.2f} | {rf_mae:<8.2f} |")
             print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
 
-        # 4. Analysis by terrain slope
-        logger.info("\n--- Model performance analysis by terrain slope ---")
+        # 4. Stratify performance across seabed slopes
+        logger.info("\n--- Performance Stratification Across Seabed Slopes ---")
         grad_y, grad_x = np.gradient(s3gm_preds_map)
         slope_map = np.sqrt(grad_y**2 + grad_x**2)
         
@@ -1192,41 +1309,47 @@ def stage5_in_depth_analysis():
             print(f"| {name:<20} | S3GM  | {len(true):<4} | {s3gm_rmse:<8.2f} | {s3gm_mae:<8.2f} |")
             
     except Exception as e:
-        logger.error(f"Stage 5 detailed performance analysis failed: {str(e)}")
+        logger.error(f"Stage 5 performance analysis failed: {str(e)}")
         raise
 
 def main():
     try:
-        logger.info("Starting bathymetry inversion program...")
+        logger.info("Starting BathySurrogate computational pipeline...")
         
         args = parse_args()
+        if not args.stage:
+            logger.error("Please specify the --stage parameter.")
+            return
+            
+        start_time = time.time()
         
-        # Initialize basic parameters
-        aoi = ee.Geometry.Rectangle([122.35, 30.62, 122.6, 30.8])
+        # Initialize basic study area parameters
+        aoi = [122.35, 30.62, 122.6, 30.8]
         gebco_years = range(2019, 2025)
         sentinel_years = range(2018, 2024)
         
         if args.stage == '1':
-            logger.info("Executing Stage 1: Data preprocessing")
+            logger.info("Executing Stage 1: Data Preprocessing")
             stage1_preprocessing(aoi, gebco_years, sentinel_years)
             
         elif args.stage == '1.5':
-            logger.info("Executing Stage 1.5: Classic model training")
+            logger.info("Executing Stage 1.5: Surrogate Model Training")
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
             classic_models = stage1_5_model_training(sentinel_time_series)
         
         elif args.stage == '1.8':
-            logger.info("Executing Stage 1.8: Classic model validation")
+            logger.info("Executing Stage 1.8: Surrogate Model Validation")
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
-            stage1_8_model_validation(sentinel_time_series)
+            gebco_time_series = np.load('intermediate_results/gebco_time_series.npy')
+            stage1_8_model_validation(sentinel_time_series, gebco_time_series)
                 
         elif args.stage == '2':
-            logger.info("Executing Stage 2: S3GM model processing")
-            # Load preprocessed data and trained model parameters
+            logger.info("Executing Stage 2: S3GM Diffusion Sampling")
+            # Load preprocessed data and trained model weights
             sentinel_time_series = np.load('intermediate_results/sentinel_time_series.npy', allow_pickle=True).item()
             gebco_time_series = np.load('intermediate_results/gebco_time_series.npy')
             
-            # Initialize system
+            # Initialize Hybrid Bathymetry System
             system = HybridBathymetrySystem(
                 region=aoi,
                 time_range={'gebco': gebco_years, 'sentinel': sentinel_years}
@@ -1236,42 +1359,47 @@ def main():
             stage2_s3gm_processing(system, sentinel_time_series, gebco_time_series, sentinel_years)
 
         elif args.stage == '3':
-            logger.info("Executing Stage 3: Post-processing and visualization")
+            logger.info("Executing Stage 3: Post-processing and Visualization")
             stage3_postprocessing()
 
         elif args.stage == '4':
-            logger.info("Executing Stage 4: Statistical significance analysis")
+            logger.info("Executing Stage 4: Statistical Significance Analysis")
             stage4_statistical_analysis()
 
         elif args.stage == '5':
-            logger.info("Executing Stage 5: Detailed performance analysis by depth and terrain zones")
+            logger.info("Executing Stage 5: Zoning Performance Analysis")
             stage5_in_depth_analysis()
 
+        elapsed = time.time() - start_time
+        logger.info(f"Stage {args.stage} completed. Elapsed time: {elapsed:.2f} s ({elapsed/60.0:.2f} min).")
+        
+        os.makedirs('results/validation', exist_ok=True)
+        with open('results/validation/execution_benchmarks.txt', 'a', encoding='utf-8') as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Stage {args.stage}: {elapsed:.2f} s ({elapsed/60.0:.2f} min)\n")
     except Exception as e:
-        logger.error(f"Error occurred during program execution: {str(e)}")
+        logger.error(f"Pipeline error: {str(e)}")
         raise
-
 if __name__ == '__main__':
-    setup_logging()  # Only call once here
+    setup_logging()  # Initialize logging once
     main()
 
-# Run Stage 1 (Data preprocessing)
+# Run Stage 1 (Data Preprocessing)
 # python run_bathymetry.py --stage 1
 
-# Run Stage 1.5 (Classic model training)
+# Run Stage 1.5 (Surrogate Model Training)
 # python run_bathymetry.py --stage 1.5
 
-# Run Stage 1.8 (Classic model validation)
+# Run Stage 1.8 (Surrogate Model Validation)
 # python run_bathymetry.py --stage 1.8
 
-# Run Stage 2 (S3GM model processing)
+# Run Stage 2 (S3GM Diffusion Sampling)
 # python run_bathymetry.py --stage 2
 
-# Run Stage 3 (Post-processing and visualization)
+# Run Stage 3 (Post-processing & Visualization)
 # python run_bathymetry.py --stage 3
 
-# Run Stage 4 (Statistical analysis)
+# Run Stage 4 (Statistical Significance Testing)
 # python run_bathymetry.py --stage 4
 
-# Run Stage 5 (Detailed performance analysis)
+# Run Stage 5 (Zoning Performance Analysis)
 # python run_bathymetry.py --stage 5
