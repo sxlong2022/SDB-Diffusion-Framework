@@ -758,7 +758,7 @@ def complete_video_pc_dps(config, net, sde, y, transform, corrector,
                          continuous=True,
                          data_scalar=None):
     dtype_torch = getattr(torch, dtype)
-    # --- v-parameterization → true score conversion ---
+    # --- v-parameterization -> true score conversion ---
         # Diffusion sampling computation
         # Diffusion sampling computation
         # Diffusion sampling computation

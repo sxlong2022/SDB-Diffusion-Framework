@@ -4,9 +4,9 @@ An Open-Source Environmental Surrogate Framework for Satellite-Derived Bathymetr
 
 ## Overview
 
-**BathySurrogate** is an open-source, modular Python computational framework designed for high-resolution Satellite-Derived Bathymetry (SDB) mapping in turbid and complex coastal waters. It implements a multi-source data fusion surrogate paradigm—coupling multi-temporal Sentinel-2 optical composites, GEBCO global bathymetric priors, and sparse in-situ nautical chart soundings—evaluated through a leak-proof Spatially Blocked 5-Fold Cross-Validation protocol.
+**BathySurrogate** is an open-source, modular Python computational framework designed for high-resolution Satellite-Derived Bathymetry (SDB) mapping in turbid and complex coastal waters. It implements a multi-source data fusion surrogate paradigm--coupling multi-temporal Sentinel-2 optical composites, GEBCO global bathymetric priors, and sparse in-situ nautical chart soundings--evaluated through a leak-proof Spatially Blocked 5-Fold Cross-Validation protocol.
 
-The framework features a 12-feature Enhanced Random Forest surrogate engine as its primary operational predictor, alongside an inverse score-based generative diffusion model (S³GM) with guided Diffusion Posterior Sampling (DPS) for conditional spatio-temporal reconstruction and uncertainty analysis.
+The framework features a 12-feature Enhanced Random Forest surrogate engine as its primary operational predictor, alongside an inverse score-based generative diffusion model (S3GM) with guided Diffusion Posterior Sampling (DPS) for conditional spatio-temporal reconstruction and uncertainty analysis.
 
 ## Highlights
 
@@ -19,14 +19,14 @@ The framework features a 12-feature Enhanced Random Forest surrogate engine as i
 ## System Requirements
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with CUDA support and ≥6GB VRAM (tested on NVIDIA GeForce RTX 2060 / RTX 4060 Laptop GPU)
-- **RAM**: ≥16GB system memory
-- **Storage**: ≥50GB for raw imagery, intermediate arrays, and cartographic products
+- **GPU**: NVIDIA GPU with CUDA support and >=6GB VRAM (tested on NVIDIA GeForce RTX 2060 / RTX 4060 Laptop GPU)
+- **RAM**: >=16GB system memory
+- **Storage**: >=50GB for raw imagery, intermediate arrays, and cartographic products
 
 ### Software Requirements
 - **Operating System**: Linux (Ubuntu 20.04+), Windows (10/11), or macOS
 - **Python**: 3.9+
-- **CUDA**: ≥11.8 (tested on CUDA 12.4)
+- **CUDA**: >=11.8 (tested on CUDA 12.4)
 - **Conda**: Recommended for reproducible environment management
 
 ## Installation
@@ -46,8 +46,8 @@ conda activate bathysurrogate
 ```
 
 The `environment.yml` includes all required dependencies:
-- PyTorch ≥2.0.1 (with CUDA acceleration)
-- scikit-learn ≥1.6
+- PyTorch >=2.0.1 (with CUDA acceleration)
+- scikit-learn >=1.6
 - NumPy, SciPy
 - Google Earth Engine Python API (`earthengine-api`)
 - netCDF4, Matplotlib, PyYAML, Pillow, Joblib, tqdm
@@ -65,30 +65,30 @@ All verification checks should report `[PASS]`.
 ## Project Structure
 
 ```
-├── run_bathymetry.py                  # Main CLI entry point for all execution stages
-├── data_acquisition_preprocessing.py      # Sentinel-2 & GEBCO data acquisition (GEE)
-├── miwc.py                            # Multi-temporal Image Weighted Composition (MIWC)
-├── environment.yml                    # Conda environment definition
-├── CITATION.cff                       # Citation metadata format
-├── LICENSE                            # MIT License
-├── tests/
-│   └── quick_test.py                  # Automated test suite and configuration validator
-├── bathysurrogate/                    # Core BathySurrogate Python package
-│   ├── __init__.py                    # Package initialization and public API
-│   ├── main.py                        # Hybrid system orchestrator (HybridBathymetrySystem)
-│   ├── classic_models.py              # Classic & 12-feature Enhanced Random Forest surrogate
-│   ├── preprocessor.py                # Min-Max normalization & spatial blocking partitions
-│   ├── s3gm_wrapper.py                # S³GM generative diffusion model wrapper
-│   ├── s3gm_config.py                 # S³GM hyperparameter dataclass
-│   ├── gpu_memory.py                  # GPU VRAM garbage collection and monitoring
-│   └── utils.py                       # Spatio-temporal array utilities and validation
-├── configs/                           # Externalized YAML configuration files
-│   ├── classic_models.yaml            # Random Forest hyperparameters & feature configs
-│   └── s3gm_default.yaml              # Diffusion SDE, VPSDE, and DPS sampling parameters
-└── S3GM/Code/                         # S³GM neural core (adapted from Li et al., 2024)
-    ├── models/                        # U-Net video architecture with RPE
-    ├── sampler/                       # VP-SDE predictor-corrector with DPS guidance
-    └── trainer/                       # Score matching loss and dataset loaders
+|-- run_bathymetry.py                  # Main CLI entry point for all execution stages
+|-- data_acquisition_preprocessing.py      # Sentinel-2 & GEBCO data acquisition (GEE)
+|-- miwc.py                            # Multi-temporal Image Weighted Composition (MIWC)
+|-- environment.yml                    # Conda environment definition
+|-- CITATION.cff                       # Citation metadata format
+|-- LICENSE                            # MIT License
+|-- tests/
+|   \-- quick_test.py                  # Automated test suite and configuration validator
+|-- bathysurrogate/                    # Core BathySurrogate Python package
+|   |-- __init__.py                    # Package initialization and public API
+|   |-- main.py                        # Hybrid system orchestrator (HybridBathymetrySystem)
+|   |-- classic_models.py              # Classic & 12-feature Enhanced Random Forest surrogate
+|   |-- preprocessor.py                # Min-Max normalization & spatial blocking partitions
+|   |-- s3gm_wrapper.py                # S3GM generative diffusion model wrapper
+|   |-- s3gm_config.py                 # S3GM hyperparameter dataclass
+|   |-- gpu_memory.py                  # GPU VRAM garbage collection and monitoring
+|   \-- utils.py                       # Spatio-temporal array utilities and validation
+|-- configs/                           # Externalized YAML configuration files
+|   |-- classic_models.yaml            # Random Forest hyperparameters & feature configs
+|   \-- s3gm_default.yaml              # Diffusion SDE, VPSDE, and DPS sampling parameters
+\-- S3GM/Code/                         # S3GM neural core (adapted from Li et al., 2024)
+    |-- models/                        # U-Net video architecture with RPE
+    |-- sampler/                       # VP-SDE predictor-corrector with DPS guidance
+    \-- trainer/                       # Score matching loss and dataset loaders
 ```
 
 ## Quick Start
@@ -104,7 +104,7 @@ This verifies:
 2. CUDA GPU availability and memory detection
 3. Synthetic Random Forest surrogate training and inference
 4. YAML configuration loading and parameter validation
-5. S³GM model wrapper configuration initialization
+5. S3GM model wrapper configuration initialization
 
 ### 2. Multi-Stage Pipeline Execution
 
@@ -120,7 +120,7 @@ python run_bathymetry.py --stage 1.5
 # Stage 1.8: Surrogate Model Out-of-Fold (OOF) Spatial Validation
 python run_bathymetry.py --stage 1.8
 
-# Stage 2: S³GM Spatio-Temporal Generative Diffusion Sampling
+# Stage 2: S3GM Spatio-Temporal Generative Diffusion Sampling
 python run_bathymetry.py --stage 2
 
 # Stage 3: Post-processing, Denormalization, and Spatial Visualization
@@ -156,7 +156,7 @@ rf_params:
     oob_score: true
 ```
 
-### S³GM Diffusion Configuration (`configs/s3gm_default.yaml`)
+### S3GM Diffusion Configuration (`configs/s3gm_default.yaml`)
 
 ```yaml
 sde_type: 'vpsde'

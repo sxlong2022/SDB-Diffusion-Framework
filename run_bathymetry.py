@@ -287,7 +287,7 @@ def stage1_5_model_training(sentinel_time_series):
                                if 0 <= int(c[0]*(H-1)) < H and 0 <= int(c[1]*(W-1)) < W])
         r2_rf_all = classic_models.train_rf(blue_values_all, green_values_all, valid_depths_all,
                                             gebco_band=gebco_2023, coords=coords_all, use_enhanced=True)
-        logger.info(f"Full Random Forest model trained successfully, R²: {r2_rf_all:.4f}")
+        logger.info(f"Full Random Forest model trained successfully, R^2: {r2_rf_all:.4f}")
         
         os.makedirs('intermediate_results/model_params', exist_ok=True)
         np.save('intermediate_results/model_params/rf_params.npy', classic_models.rf_params)
@@ -322,7 +322,7 @@ def stage1_5_model_training(sentinel_time_series):
                                            if 0 <= int(c[0]*(H-1)) < H and 0 <= int(c[1]*(W-1)) < W])
             r2_rf_k = fold_classic.train_rf(blue_values_k, green_values_k, valid_depths_k,
                                             gebco_band=gebco_2023, coords=train_coords_valid, use_enhanced=True)
-            logger.info(f"Fold {k} Random Forest model trained successfully, R²: {r2_rf_k:.4f}")
+            logger.info(f"Fold {k} Random Forest model trained successfully, R2: {r2_rf_k:.4f}")
             
             # Save fold-specific models and parameter metadata
             dump(fold_classic.rf_model, f'intermediate_results/model_params/rf_model_fold_{k}.joblib')
@@ -446,7 +446,7 @@ def stage1_8_model_validation(sentinel_time_series, gebco_time_series=None):
         logger.info("Enhanced RF Spatially Blocked Cross-Validation (OOF) Results:")
         logger.info(f"OOF RMSE: {rmse:.2f} m")
         logger.info(f"OOF MAE: {mae:.2f} m")
-        logger.info(f"OOF R²: {r2:.4f}")
+        logger.info(f"OOF R2: {r2:.4f}")
         logger.info(f"Evaluated Soundings Count: {len(true_depths_oof)}")
         
         # Plot RF OOF scatter validation figure
@@ -460,7 +460,7 @@ def stage1_8_model_validation(sentinel_time_series, gebco_time_series=None):
             ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')
             ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R²: {r2:.4f}'
+            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R2: {r2:.4f}'
             ax_scatter.text(0.95, 0.05, text_str,
                       transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
                       verticalalignment='bottom', horizontalalignment='right',
@@ -510,8 +510,8 @@ def create_time_series_plot(depths, years, model_name, output_dir, land_mask_arr
         extent = [122.35, 122.6, 30.62, 30.8]
         im = None
 
-        def lon_formatter(x, pos): return f'{x:.1f}°E'
-        def lat_formatter(y, pos): return f'{y:.1f}°N'
+        def lon_formatter(x, pos): return f'{x:.1f}\u00b0E'
+        def lat_formatter(y, pos): return f'{y:.1f}\u00b0N'
         
         for i, (depth, year) in enumerate(zip(depths, years)):
             ax = plt.subplot(num_rows, num_cols, i + 1)
@@ -844,7 +844,7 @@ def stage3_postprocessing():
         logger.info("S3GM Spatially Blocked CV (OOF) Results:")
         logger.info(f"OOF RMSE: {rmse:.2f} m" if np.isfinite(rmse) else "OOF RMSE: N/A")
         logger.info(f"OOF MAE: {mae:.2f} m" if np.isfinite(mae) else "OOF MAE: N/A")
-        logger.info(f"OOF R²: {r2:.4f}" if np.isfinite(r2) else "OOF R²: N/A")
+        logger.info(f"OOF R2: {r2:.4f}" if np.isfinite(r2) else "OOF R2: N/A")
         logger.info(f"Independent Evaluated Soundings Count: {len(true_depths_oof)}")
         
         # Plot OOF independent validation scatter plot
@@ -858,7 +858,7 @@ def stage3_postprocessing():
             ideal_line, = ax_scatter.plot([0, 75], [0, 75], 'r--', linewidth=1.5, label='Ideal fit')
             ax_scatter.set_xlim(0, 75)
             ax_scatter.set_ylim(0, 75)
-            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R²: {r2:.4f}'
+            text_str = f'OOF RMSE: {rmse:.2f} m\nOOF MAE: {mae:.2f} m\nOOF R2: {r2:.4f}'
             ax_scatter.text(0.95, 0.05, text_str,
                       transform=ax_scatter.transAxes, fontsize=FONTSIZE_TEXT_BOX,
                       verticalalignment='bottom', horizontalalignment='right',
@@ -880,8 +880,8 @@ def stage3_postprocessing():
         plt.close(fig_scatter)
         # --- End of S3GM Scatter Plot ---
 
-        def lon_formatter(x, pos): return f'{x:.1f}°E'
-        def lat_formatter(y, pos): return f'{y:.1f}°N'
+        def lon_formatter(x, pos): return f'{x:.1f}\u00b0E'
+        def lat_formatter(y, pos): return f'{y:.1f}\u00b0N'
 
         # --- Generate Difference Map (S3GM - RF) for 2023 ---
         try:
