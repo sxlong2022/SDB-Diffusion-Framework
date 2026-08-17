@@ -76,7 +76,7 @@ All verification checks should report `[PASS]`.
 |-- bathysurrogate/                    # Core BathySurrogate Python package
 |   |-- __init__.py                    # Package initialization and public API
 |   |-- main.py                        # Hybrid system orchestrator (HybridBathymetrySystem)
-|   |-- classic_models.py              # Classic & 12-feature Enhanced Random Forest surrogate
+|   |-- classic_models.py              # Operational 12-feature Enhanced Random Forest surrogate & baseline models
 |   |-- preprocessor.py                # Min-Max normalization & spatial blocking partitions
 |   |-- s3gm_wrapper.py                # S3GM generative diffusion model wrapper
 |   |-- s3gm_config.py                 # S3GM hyperparameter dataclass
