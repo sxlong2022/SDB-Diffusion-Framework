@@ -19,14 +19,14 @@ The framework features a 12-feature Enhanced Random Forest surrogate engine as i
 ## System Requirements
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with CUDA support and >=6GB VRAM (tested on NVIDIA GeForce RTX 2060 / RTX 4060 Laptop GPU)
+- **GPU**: NVIDIA GPU with CUDA support and >=6GB VRAM (tested and benchmarked on NVIDIA GeForce RTX 2060, 6GB VRAM)
 - **RAM**: >=16GB system memory
 - **Storage**: >=50GB for raw imagery, intermediate arrays, and cartographic products
 
 ### Software Requirements
-- **Operating System**: Linux (Ubuntu 20.04+), Windows (10/11), or macOS
-- **Python**: 3.9+
-- **CUDA**: >=11.8 (tested on CUDA 12.4)
+- **Operating System**: Windows (10/11) or Linux (Ubuntu 20.04+)
+- **Python**: 3.9 (benchmarked on 3.9.21)
+- **CUDA**: 11.8 (PyTorch 2.3.1 with CUDA 11.8)
 - **Conda**: Recommended for reproducible environment management
 
 ## Installation
@@ -46,11 +46,11 @@ conda activate bathysurrogate
 ```
 
 The `environment.yml` includes all required dependencies:
-- PyTorch >=2.0.1 (with CUDA acceleration)
-- scikit-learn >=1.6
-- NumPy, SciPy
-- Google Earth Engine Python API (`earthengine-api`)
-- netCDF4, Matplotlib, PyYAML, Pillow, Joblib, tqdm
+- PyTorch 2.3.1 (with CUDA 11.8 acceleration)
+- scikit-learn 1.6.0
+- NumPy 1.24.4, SciPy 1.13.1, pandas 2.0.3
+- Google Earth Engine Python API (`earthengine-api` >= 1.5.5)
+- netCDF4 1.7.2, Matplotlib 3.7.5, PyYAML 6.0.2, Pillow 9.5.0, Joblib 1.4.2, tqdm 4.65.2, einops 0.8.0
 
 ### Step 3: Verify Installation
 

@@ -6,33 +6,34 @@ channels:
   - defaults
 dependencies:
   # Python
-  - python=3.9
+  - python=3.9.21
   
   # PyTorch with CUDA
-  - pytorch>=2.0.1
-  - pytorch-cuda=12.4
+  - pytorch=2.3.1
+  - pytorch-cuda=11.8
   
   # Scientific computing
-  - numpy>=1.24
-  - scipy>=1.13
+  - numpy=1.24.4
+  - scipy=1.13.1
+  - pandas=2.0.3
   
   # Machine learning
-  - scikit-learn>=1.6
+  - scikit-learn=1.6.0
   
   # NetCDF support (for GEBCO data)
-  - netcdf4>=1.7
+  - netcdf4=1.7.2
   
   # Visualization
-  - matplotlib>=3.7
+  - matplotlib=3.7.5
   
   # Utilities
-  - pyyaml>=6.0
-  - tqdm
-  - joblib>=1.4
-  - pillow>=9.5
+  - pyyaml=6.0.2
+  - tqdm=4.65.2
+  - joblib=1.4.2
+  - pillow=9.5.0
   
   # Pip dependencies
   - pip
   - pip:
-    - earthengine-api>=1.4
-    - einops>=0.8
+    - earthengine-api>=1.5.5
+    - einops>=0.8.0
