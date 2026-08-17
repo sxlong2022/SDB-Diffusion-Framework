@@ -11,9 +11,9 @@ The framework features a 12-feature Enhanced Random Forest surrogate engine as i
 ## Highlights
 
 - **Modular Software Design**: Implements Strategy, Factory, and Pipeline architectural design patterns with externalized YAML configuration management.
-- **Leak-Proof Spatial Validation**: Enforces Spatially Blocked 5-Fold Cross-Validation ($4 \times 4$ spatial grid) ensuring zero spatial autocorrelation leakage between training and evaluation splits.
-- **Enhanced Surrogate Modeling**: Integrates 12 domain-specific features (spectral bands, band ratios, log transforms, spatial coordinates, GEBCO bathymetric priors, and nearest-neighbor sounding distances/depths) achieving pooled Out-of-Fold (OOF) $R^2 = 0.483$, Pearson $r = 0.706$, $\text{RMSE} = 9.19\text{ m}$, $\text{MAE} = 6.61\text{ m}$, and a range-normalized $\text{nRMSE}_{\text{range}} = 12.61\%$.
-- **High-Performance Computation**: Low computational complexity ($O(S \times N \times C^2)$), processing annual decadal mapping workflows in seconds on standard CPUs and minutes on consumer GPUs (NVIDIA RTX 2060, 6GB VRAM).
+- **Leak-Proof Spatial Validation**: Enforces Spatially Blocked 5-Fold Cross-Validation (4 × 4 spatial grid) ensuring zero spatial autocorrelation leakage between training and evaluation splits.
+- **Enhanced Surrogate Modeling**: Integrates 12 domain-specific features (spectral bands, band ratios, log transforms, spatial coordinates, GEBCO bathymetric priors, and nearest-neighbor sounding distances/depths) achieving pooled Out-of-Fold (OOF) R² = 0.483, Pearson r = 0.706, RMSE = 9.19 m, MAE = 6.61 m, and a range-normalized nRMSE = 12.61%.
+- **High-Performance Computation**: Low computational complexity (O(S × N × C²)), processing annual decadal mapping workflows in seconds on standard CPUs and minutes on consumer GPUs (NVIDIA RTX 2060, 6GB VRAM).
 - **FAIR4RS Compliance**: Adheres strictly to Findable, Accessible, Interoperable, and Reusable software standards with comprehensive test suites, metadata (`CITATION.cff`), and pinned environment definitions (`environment.yml`).
 
 ## System Requirements
